@@ -9,10 +9,14 @@ MONGODB_URI = os.environ["MONGODB_URI"]
 client = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=5000)
 
 try:
-    print(client.server_info())
+    client.server_info()
+    # print(client.server_info())
 except Exception:
     print("Unable to connect to the server.")
 
 db = client.neems
 
-print(db.meta.find_one({"name":"DEFAULT NEEM DO NOT DELETE"})['url'])
+# print(db.meta.find_one({"name":"DEFAULT NEEM DO NOT DELETE"})['url'])
+# print(db.meta.find().['url'])
+
+client.close()
