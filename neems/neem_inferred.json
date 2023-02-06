@@ -1,1 +1,0 @@
-{"_id":{"$oid":"5fdca128cdbb4f1c4134023b"},"query":"subclass_of('http://www.ease-crc.org/ont/SOMA.owl#Item',value('http://www.ontologydesignpatterns.org/ont/dul/DUL.owl#hasParameter','_'))","module":"owl_reasoner","predicate":"subclass_of"}
