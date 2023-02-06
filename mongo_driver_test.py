@@ -18,11 +18,15 @@ except Exception:
 db = client.neems
 
 # print(db.meta.find_one({"name":"DEFAULT NEEM DO NOT DELETE"})['url'])
-cursor = db.meta.find({},cursor_type=CursorType.EXHAUST)
+cursor = db.meta.find({},projection={"name":1},cursor_type=CursorType.EXHAUST)
+coll = db.get_collection('633592ff022842bd856ba42a_tf')
+cursor = coll.find({})
 n_doc = 0
 for doc in cursor:
     n_doc += 1
-    if doc['_id'] == ObjectId('5fdca422f5f14142fe678936'):
-        print(doc['name'], doc['_id'])
+    print(doc)
+    # if doc['_id'] == ObjectId('5fdca422f5f14142fe678936'):
+    #     print(doc['name'], doc['_id'])
 print("number of docs = {}".format(n_doc))
+
 client.close()
