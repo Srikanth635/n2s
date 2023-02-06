@@ -15,4 +15,4 @@ except Exception:
 
 db = client.neems
 
-print(db.meta.find_one({"name":"DEFAULT NEEM DO NOT DELETE"}))
+print(db.meta.find_one({"name":"DEFAULT NEEM DO NOT DELETE"})['url'])
