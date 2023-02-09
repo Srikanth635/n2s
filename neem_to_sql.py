@@ -6,7 +6,7 @@ import pymysql
 
 ObjectId.__str__
 # Replace the uri string with your MongoDB deployment's connection string.
-MONGODB_URI = os.environ["MONGODB_URI"]
+MONGODB_URI = os.environ["LOCAL_MONGODB_URI"]
 # set a 5-second connection timeout
 client = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=5000)
 
