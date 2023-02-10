@@ -6,6 +6,8 @@ from bson.decimal128 import Decimal128
 import pymysql
 from numpy import iterable
 import decimal
+from datetime import datetime
+
 
 # mongo_to_python_conversions
 def mon2py(val):
@@ -13,12 +15,20 @@ def mon2py(val):
         return float(val.to_decimal())
     elif type(val) == ObjectId:
         return str(val)
+    elif type(val) == datetime:
+        return val.timestamp()
     else:
         return val
 
-def py2sql(val_type):
-    if val_type == int:
-        return 'int'
+def py2sql(val_type, id=False):
+    if id:
+        return 'VARCHAR(24)'
+    elif val_type == int:
+        return 'INT'
+    elif val_type == float:
+        return 'DOUBLE'
+    elif val_type == str:
+        return 'LONGTEXT'
 
 def print_all_collection_types(collection):
     single_doc = collection.find_one({})
@@ -40,30 +50,127 @@ def print_all_collection_types(collection):
 
 def convert_to_tables(name, collection):
     single_doc = collection.find_one({})
-    sql_commands = []
+    sql_table_creation_cmds = []
+    sql_constraint_cmds = []
+    # data_to_insert = {}
     def find_datatype(key, obj, first=False):
         if type(obj) == dict:
-            table_string = f"CREATE TABLE {key} ("
-            table_string += "ID int NOT NULL,"
+            # data_to_insert[key] = []
+            # insert_string = f"INSERT INTO {key} VALUES"
+            id_col_string = f"CREATE TABLE IF NOT EXISTS {key} ("
+            id_col_string += f"ID INT NOT NULL"
+            id_col_string += " AUTO_INCREMENT PRIMARY KEY);"# if first else " PRIMARY KEY);"
+            sql_table_creation_cmds.append(id_col_string)
             for k, v in obj.items():
-                table_string += f"{k}"
-                print("key = ", k)
-                v_type, v_iterable = find_datatype(k, v)
+                # col_string = f"ALTER TABLE {key} ADD COLUMN IF NOT EXISTS {k}"
+                # print("key = ", k)
+                v, v_type, v_iterable = find_datatype(k, v)
                 if v_iterable:
-                    table_string += "_fk int,"
-                    table_string += f"FOREIGN KEY ({k}_fk) REFERENCES {k}(ID),"
+                    # col_string += f"_fk INT NOT NULL, ADD FOREIGN KEY ({k}_fk) REFERENCES {k}(ID);"
+                    col_string = f"ALTER TABLE {key} ADD FOREIGN KEY (ID) REFERENCES {k}(ID);"
                 else:
-                    table_string += f" {v_type}"
+                    col_string = f"ALTER TABLE {key} ADD COLUMN IF NOT EXISTS {k}"
+                    id = True if k == '_id' else False
+                    col_string += f" {py2sql(v_type, id=id)};"
+                    # insert_string += f" {k} = {v}"
+                    # data_to_insert[key].append((k, v))
+                sql_table_creation_cmds.append(col_string)
+            # primary_key_string = f"ALTER TABLE {key} ADD IF NOT EXISTS PRIMARY KEY (ID);"
+            # insert_string += ";"
+            # sql_table_creation_cmds.append(primary_key_string)
+            # if insert_string[-7:] != "VALUES;":
+            #     sql_insert_cmds.append(insert_string)
         elif iterable(obj) and type(obj) != str:
             print("iterable of type ", type(obj))
+            table_string = f"CREATE TABLE IF NOT EXISTS {key} ("
+            table_string += "ID INT NOT NULL"
+            table_string += " AUTO_INCREMENT,"
+            table_string += " array_index INT,"
+            if not first:
+                table_string += " parent_fk INT,"
+                sql_constraint_cmds.append("ALTER TABLE {name} ADD FOREIGN KEY (parent_fk) REFERENCES {name}(ID);")
+            i = 0
+            created_values = False
             for v in obj:
-                find_datatype(v)
+                v, v_type, v_iterable = find_datatype(key+'_object', v)
+                # This means we are in the meta file, which we know the structure of.
+                if v_iterable and not created_values:
+                    table_string += " object_fk INT,"
+                    table_string += f" project_{i}"
+                    table_string += "_fk INT NOT NULL,"
+                    table_string += f"FOREIGN KEY (object_fk) REFERENCES {key+'_object'}(ID),"
+                    created_values = True
+                elif not created_values:
+                    table_string += " array_values"
+                    id = True if key == '_id' else False
+                    table_string += f" {py2sql(v_type, id=id)}, "
+                    created_values = True
+                    # insert_string += f" {k} = {v}"
+                    # data_to_insert[key].append((k, v))
+                i += 1
+            table_string += f"PRIMARY KEY (ID));"
+            # insert_string += ";"
+            sql_table_creation_cmds.append(table_string)
         else:
             obj = mon2py(obj)
             print(type(obj))
             print(obj)
-        return type(obj), iterable(obj)
-    find_datatype(single_doc, first=True)
+        return obj, type(obj), iterable(obj) and type(obj) != str
+    find_datatype(name, single_doc, first=True)
+    [print(sql_table_creation_cmds[i]) for i in range(len(sql_table_creation_cmds))]
+    # [print(sql_insert_cmds[i]) for i in range(len(sql_insert_cmds))]
+    return sql_table_creation_cmds
+
+
+def insert_to_tables(name, collection):
+    all_docs = collection.find({}, cursor_type=CursorType.EXHAUST)
+    data_to_insert = {}
+    sql_insert_commands = ["SET FOREIGN_KEY_CHECKS=0;"]
+    def insert_doc(key, obj, first=False):
+        if type(obj) == dict:
+            data_inserted = False
+            for k, v in obj.items():
+                v, v_type, v_iterable = insert_doc(k, v)
+                if key not in data_to_insert.keys():
+                        data_to_insert[key] = []
+                if v_iterable:
+                    if not data_inserted:
+                        data_to_insert[key].append(())
+                        data_inserted = True
+                else:
+                    # if key not in data_to_insert.keys():
+                    #     data_to_insert[key] = []
+                    if not data_inserted:
+                        data_to_insert[key].append([v])
+                    else:
+                        data_to_insert[key][-1].append(v)
+                    data_inserted = True
+            if data_inserted:
+                data_to_insert[key][-1] = tuple(data_to_insert[key][-1])
+        elif iterable(obj) and type(obj) != str:
+            print("iterable of type ", type(obj))
+            for v in obj:
+                v, v_type, v_iterable = insert_doc(key, v)
+        else:
+            obj = mon2py(obj)
+        return obj, type(obj), iterable(obj) and type(obj) != str
+    
+    for doc in all_docs:
+        insert_doc(name, doc, first=True)
+    for key, rows in data_to_insert.items():
+        all_rows_str = ""
+        for i, row in enumerate(rows):
+            str_row = str(row)
+            if len(row) > 0:
+                str_row = f'(NULL, {str_row[1:]}'
+            else:
+                str_row = f'(NULL)'
+            all_rows_str += str_row
+            if i != len(rows)-1 :
+                all_rows_str += ', '
+        sql_insert_commands.append(f"INSERT INTO {key} VALUES {all_rows_str};")
+    sql_insert_commands.append("SET FOREIGN_KEY_CHECKS=1;")
+    return sql_insert_commands
 
 # Replace the uri string with your MongoDB deployment's connection string.
 MONGODB_URI = os.environ["LOCAL_MONGODB_URI"]
@@ -79,6 +186,14 @@ except Exception:
 db = client.neems
 
 # print(db.meta.find_one({"name":"DEFAULT NEEM DO NOT DELETE"})['url'])
+sql_table_creation_cmds = []
+sql_insert_cmds = []
+# meta = db.meta
+# print("=============meta types")
+# print_all_collection_types(meta)
+# sql_table_creation_cmds.extend(convert_to_tables("neems", meta))
+# sql_insert_cmds.extend(insert_to_tables("neems", meta))
+
 cursor = db.meta.find({},cursor_type=CursorType.EXHAUST)
 all_neems = {}
 neem_ids = []
@@ -91,6 +206,9 @@ for doc in cursor:
     tf = db.get_collection(id + '_tf')
     print("=============tf types")
     print_all_collection_types(tf)
+    sql_table_creation_cmds = convert_to_tables("tf", tf)
+    sql_insert_cmds = insert_to_tables("tf", tf)
+    break
     annotations = db.get_collection(id + '_annotations')
     print("============annotation types")
     print_all_collection_types(annotations)
@@ -111,4 +229,52 @@ print("number of docs = {}".format(n_doc))
 
 
 client.close()
+
+
+import os
+
+
+# Create a connection object
+# IP address of the MySQL database server
+Host = "localhost" 
+  
+# User name of the database server
+User = "newuser"       
+  
+# Password for the database user
+Password = os.environ['MYSQL_USER_PASS']           
+  
+conn  = pymysql.connect(host=Host, user=User, password=Password, database='test')
+  
+# Create a cursor object
+cur  = conn.cursor()
+  
+# cur.execute("SHOW DATABASES")
+# databaseList = cur.fetchall()
+  
+# for database in databaseList:
+#   print(database)
+
+cur.execute("DROP TABLE IF EXISTS tf")
+cur.execute("DROP TABLE IF EXISTS transform")
+cur.execute("DROP TABLE IF EXISTS translation")
+cur.execute("DROP TABLE IF EXISTS rotation")
+cur.execute("DROP TABLE IF EXISTS header")
+conn.commit()
+# cur.execute("CREATE TABLE neems ")
+for cmd in sql_table_creation_cmds:
+    # # To execute the SQL query
+    cur.execute(cmd)
+
+    # # To commit the changes
+    conn.commit()
+
+for cmd in sql_insert_cmds:
+    # # To execute the SQL query
+    cur.execute(cmd)
+   
+    # # To commit the changes
+    conn.commit()
+  
+conn.close()
 
