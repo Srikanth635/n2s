@@ -7,6 +7,17 @@ import pymysql
 from numpy import iterable
 import decimal
 from datetime import datetime
+import re
+from time import time
+import sqlalchemy.pool as pool
+from sqlalchemy import create_engine
+
+def getconn():
+    c = create_engine('mysql+pymysql://{}:{}@{}:{}/{}?charset=utf8mb4'.format(User, Password, Host, 3306, 'test'))
+    # c = pymysql.connect(host=Host, user=User, password=Password, database='test',)
+    return c
+
+mypool = pool.Pool(getconn, pre_ping=True, recycle=300)
 
 
 # mongo_to_python_conversions
@@ -48,8 +59,12 @@ def print_all_collection_types(collection):
             print(obj)
     find_datatype(single_doc)
 
-def convert_to_tables(name, collection):
+def convert_to_tables(name, collection, neem_id):
     single_doc = collection.find_one({})
+    if single_doc is None:
+        print(f"NO DOCUMENTS FOUND FOR {name} with neem_id {str(neem_id)}")
+        return []
+    single_doc["neem_id"] = neem_id
     sql_table_creation_cmds = []
     sql_constraint_cmds = []
     # data_to_insert = {}
@@ -67,10 +82,11 @@ def convert_to_tables(name, collection):
                 v, v_type, v_iterable = find_datatype(k, v)
                 if v_iterable:
                     # col_string += f"_fk INT NOT NULL, ADD FOREIGN KEY ({k}_fk) REFERENCES {k}(ID);"
-                    col_string = f"ALTER TABLE {key} ADD FOREIGN KEY (ID) REFERENCES {k}(ID);"
+                    # col_string = f"ALTER TABLE {key} ADD FOREIGN KEY (ID) REFERENCES {k}(ID);"
+                    col_string = f"ALTER TABLE {k} ADD FOREIGN KEY (ID) REFERENCES {key}(ID);"
                 else:
                     col_string = f"ALTER TABLE {key} ADD COLUMN IF NOT EXISTS {k}"
-                    id = True if k == '_id' else False
+                    id = True if k in ['_id', 'neem_id'] else False
                     col_string += f" {py2sql(v_type, id=id)};"
                     # insert_string += f" {k} = {v}"
                     # data_to_insert[key].append((k, v))
@@ -102,7 +118,7 @@ def convert_to_tables(name, collection):
                     created_values = True
                 elif not created_values:
                     table_string += " array_values"
-                    id = True if key == '_id' else False
+                    id = True if key in ['_id', 'neem_id'] else False
                     table_string += f" {py2sql(v_type, id=id)}, "
                     created_values = True
                     # insert_string += f" {k} = {v}"
@@ -122,7 +138,7 @@ def convert_to_tables(name, collection):
     return sql_table_creation_cmds
 
 
-def insert_to_tables(name, collection):
+def insert_to_tables(name, collection, neem_id):
     all_docs = collection.find({}, cursor_type=CursorType.EXHAUST)
     data_to_insert = {}
     sql_insert_commands = ["SET FOREIGN_KEY_CHECKS=0;"]
@@ -135,13 +151,13 @@ def insert_to_tables(name, collection):
                         data_to_insert[key] = []
                 if v_iterable:
                     if not data_inserted:
-                        data_to_insert[key].append(())
+                        data_to_insert[key].append(['NULL'])
                         data_inserted = True
                 else:
                     # if key not in data_to_insert.keys():
                     #     data_to_insert[key] = []
                     if not data_inserted:
-                        data_to_insert[key].append([v])
+                        data_to_insert[key].append(['NULL', v])
                     else:
                         data_to_insert[key][-1].append(v)
                     data_inserted = True
@@ -155,19 +171,26 @@ def insert_to_tables(name, collection):
             obj = mon2py(obj)
         return obj, type(obj), iterable(obj) and type(obj) != str
     
+    n_doc = 0
     for doc in all_docs:
+        n_doc += 1
+        doc["neem_id"] = neem_id
         insert_doc(name, doc, first=True)
+    print(f"THIS NEEM WITH ID {str(neem_id)} HAS {n_doc} DOCUMENTS")
     for key, rows in data_to_insert.items():
-        all_rows_str = ""
-        for i, row in enumerate(rows):
-            str_row = str(row)
-            if len(row) > 0:
-                str_row = f'(NULL, {str_row[1:]}'
-            else:
-                str_row = f'(NULL)'
-            all_rows_str += str_row
-            if i != len(rows)-1 :
-                all_rows_str += ', '
+        # all_rows_str = ""
+        # for i, row in enumerate(rows):
+        #     str_row = str(row)
+        #     if len(row) > 0:
+        #         str_row = f'(NULL, {str_row[1:]}'
+        #     else:
+        #         str_row = f'(NULL)'
+        #     all_rows_str += str_row
+        #     if i != len(rows)-1 :
+        #         all_rows_str += ', '
+        all_rows_str = str(rows).strip('[]')
+        all_rows_str = re.sub("('NULL')", "NULL", all_rows_str)
+        all_rows_str = re.sub("(,\))", ")", all_rows_str)
         sql_insert_commands.append(f"INSERT INTO {key} VALUES {all_rows_str};")
     sql_insert_commands.append("SET FOREIGN_KEY_CHECKS=1;")
     return sql_insert_commands
@@ -201,14 +224,21 @@ n_doc = 0
 for doc in cursor:
     n_doc += 1
     # print(doc)
+    print(doc)
     id = str(doc['_id'])
     neem_ids.append(id)
     tf = db.get_collection(id + '_tf')
     print("=============tf types")
     print_all_collection_types(tf)
-    sql_table_creation_cmds = convert_to_tables("tf", tf)
-    sql_insert_cmds = insert_to_tables("tf", tf)
-    break
+    creation_time_s = time()
+    sql_table_creation_cmds.extend(convert_to_tables("tf", tf, neem_id=doc['_id']))
+    print("Creation Time = ", time() - creation_time_s)
+    insertion_time_s = time()
+    sql_insert_cmds.extend(insert_to_tables("tf", tf, neem_id=doc['_id']))
+    print("Insertion Time = ", time() - insertion_time_s)
+    if n_doc >= 1:
+        break
+    continue
     annotations = db.get_collection(id + '_annotations')
     print("============annotation types")
     print_all_collection_types(annotations)
@@ -244,8 +274,10 @@ User = "newuser"
 # Password for the database user
 Password = os.environ['MYSQL_USER_PASS']           
   
-conn  = pymysql.connect(host=Host, user=User, password=Password, database='test')
-  
+# conn  = pymysql.connect(host=Host, user=User, password=Password, database='test',)
+# get a connection
+conn = mypool.connect()
+
 # Create a cursor object
 cur  = conn.cursor()
   
@@ -255,11 +287,12 @@ cur  = conn.cursor()
 # for database in databaseList:
 #   print(database)
 
-cur.execute("DROP TABLE IF EXISTS tf")
-cur.execute("DROP TABLE IF EXISTS transform")
 cur.execute("DROP TABLE IF EXISTS translation")
 cur.execute("DROP TABLE IF EXISTS rotation")
 cur.execute("DROP TABLE IF EXISTS header")
+cur.execute("DROP TABLE IF EXISTS transform")
+cur.execute("DROP TABLE IF EXISTS tf")
+
 conn.commit()
 # cur.execute("CREATE TABLE neems ")
 for cmd in sql_table_creation_cmds:
