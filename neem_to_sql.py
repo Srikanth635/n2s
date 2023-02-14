@@ -14,6 +14,8 @@ from sqlalchemy import create_engine
 from sqlalchemy import text
 
 
+RULE_BOOK = {("neems","projects"):"many2many"}
+
 def getconn():
     # SQLALCHEMY_DATABASE_URI = f"mysql+pymysql://{User}:{Password}@{Host}/{'test'}"
     c = create_engine('mysql://{}:{}@{}/{}?charset=utf8mb4'.format(User, Password, Host, 'test'), pool_pre_ping=True, pool_recycle=500, pool_timeout=500)
@@ -101,16 +103,25 @@ def convert_to_tables(name, collection, neem_id=None):
         elif iterable(obj) and type(obj) != str:
             print("iterable of type ", type(obj))
             id_col_string = f"CREATE TABLE IF NOT EXISTS {key} ("
-            id_col_string += "array_index INT NOT NULL AUTO_INCREMENT PRIMARY KEY, ID INT NOT NULL);"
+            id_col_string += "ID INT NOT NULL AUTO_INCREMENT PRIMARY KEY, "
+
+            if (name,key) in RULE_BOOK.keys():
+                relation =  RULE_BOOK[(name, key)]
+            else:
+                relation = "one2many"
+            if relation == "one2many":
+                id_col_string = f"array_index INT NOT NULL AUTO_INCREMENT, {name}_ID INT NOT NULL);"
+            elif relation == "many2many":
+                id_col_string = f"array_index INT NULL, {name}_ID INT NULL, PRIMARY KEY (array_index, {name}_ID));"
             sql_table_creation_cmds.append(id_col_string)
             # sql_constraint_cmds.append(f"ALTER TABLE {key} ADD FOREIGN KEY (parent_fk) REFERENCES {name}(ID);")
             i = 0
             created_values = False
             for v in obj:
-                v, v_type, v_iterable = find_datatype(key+'_object_'+str(i), v)
+                v, v_type, v_iterable = find_datatype(key+'_object', v)
                 # This means we are in the meta file, which we know the structure of.
                 if v_iterable and not created_values:
-                    col_string = f"ALTER TABLE {key+'_object_'+str(i)} ADD FOREIGN KEY (ID) REFERENCES {key}(array_index);"
+                    col_string = f"ALTER TABLE {key+'_object'} ADD FOREIGN KEY (ID) REFERENCES {key}(array_index);"
                     created_values = True
                 elif not created_values:
                     col_string = f"ALTER TABLE {key} ADD COLUMN IF NOT EXISTS array_values"
@@ -139,14 +150,20 @@ def convert_to_tables(name, collection, neem_id=None):
     [print(sql_table_creation_cmds[i]) for i in range(len(sql_table_creation_cmds))]
     return sql_table_creation_cmds
 
-def get_insert_rows_commands(data_to_insert):
+def get_insert_rows_commands(data_to_insert, columns_to_insert=None):
     sql_insert_commands = []
     for key, rows in data_to_insert.items():
+        if columns_to_insert is not None:
+            cols = columns_to_insert[key]
+            cols_str = str(cols).strip('[]')
         all_rows_str = str(rows).strip('[]')
         all_rows_str = re.sub("('NULL')", "NULL", all_rows_str)
         all_rows_str = re.sub("(,\))", ")", all_rows_str)
-        # sql_insert_commands.append(f"INSERT INTO {key} {columns} VALUES {all_rows_str};")
-        sql_insert_commands.append(f"INSERT INTO {key} VALUES {all_rows_str};")
+        
+        if columns_to_insert is not None:
+            sql_insert_commands.append(f"INSERT INTO {key} {cols_str} VALUES {all_rows_str};")
+        else:
+            sql_insert_commands.append(f"INSERT INTO {key} VALUES {all_rows_str};")
     return sql_insert_commands
 
 def insert_to_tables(name, collection, neem_id=None):
@@ -179,7 +196,7 @@ def insert_to_tables(name, collection, neem_id=None):
                     data_inserted = True
             if data_inserted:
                 data_to_insert[key][-1] = tuple(data_to_insert[key][-1])
-                columns_to_insert[key][-1] = tuple(columns_to_insert[key][-1])
+                # columns_to_insert[key][-1] = tuple(columns_to_insert[key][-1])
         elif iterable(obj) and type(obj) != str:
             print("iterable of type ", type(obj))
             for v in obj:
@@ -195,6 +212,8 @@ def insert_to_tables(name, collection, neem_id=None):
         monitor_ndoc += 1
         if neem_id is not None:
             doc["neem_id"] = neem_id
+            # if "projects" in doc.keys():
+            #     doc["projects"]
         insert_doc(name, doc, first=True)
         if monitor_ndoc >= 100000:
             sql_insert_commands.extend(get_insert_rows_commands(data_to_insert))
@@ -247,7 +266,7 @@ for doc in cursor:
     insertion_time_s = time()
     sql_insert_cmds.extend(insert_to_tables("tf", tf, neem_id=doc['_id']))
     print("Insertion Time = ", time() - insertion_time_s)
-    if n_doc >= 2:
+    if n_doc >= 1:
         break
     continue
     annotations = db.get_collection(id + '_annotations')
