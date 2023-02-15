@@ -78,16 +78,14 @@ def convert_to_tables(name, collection, neem_id=None):
     # data_to_insert = {}
     def find_datatype(key, obj, first=False):
         if type(obj) == dict:
-            id_col_string = f"CREATE TABLE IF NOT EXISTS {key} ("
-            id_col_string += f"ID INT NOT NULL"
-            id_col_string += " AUTO_INCREMENT PRIMARY KEY);"# if first else " PRIMARY KEY);"
+            id_col_string = f"CREATE TABLE IF NOT EXISTS {key} (ID INT NOT NULL AUTO_INCREMENT PRIMARY KEY);"
             sql_table_creation_cmds.append(id_col_string)
             for k, v in obj.items():
                 if (key,k) in seen_keys:
                     continue
                 v, v_type, v_iterable = find_datatype(k, v)
                 if v_iterable:
-                    col_string = f"ALTER TABLE {k} ADD FOREIGN KEY (ID) REFERENCES {key}(ID);"
+                    col_string = f"ALTER TABLE {k} ADD FOREIGN KEY IF NOT EXISTS (ID) REFERENCES {key}(ID);"
                 else:
                     col_string = f"ALTER TABLE {key} ADD COLUMN IF NOT EXISTS {k}"
                     id = True if k in ['_id', 'neem_id'] else False
@@ -102,26 +100,28 @@ def convert_to_tables(name, collection, neem_id=None):
                     seen_keys.append((key,k))
         elif iterable(obj) and type(obj) != str:
             print("iterable of type ", type(obj))
-            id_col_string = f"CREATE TABLE IF NOT EXISTS {key} ("
-            id_col_string += "ID INT NOT NULL AUTO_INCREMENT PRIMARY KEY, "
-
-            if (name,key) in RULE_BOOK.keys():
-                relation =  RULE_BOOK[(name, key)]
-            else:
-                relation = "one2many"
-            if relation == "one2many":
-                id_col_string = f"array_index INT NOT NULL AUTO_INCREMENT, {name}_ID INT NOT NULL);"
-            elif relation == "many2many":
-                id_col_string = f"array_index INT NULL, {name}_ID INT NULL, PRIMARY KEY (array_index, {name}_ID));"
+            id_col_string = f"CREATE TABLE IF NOT EXISTS {key} (ID INT NOT NULL,"
+            # if (name,key) in RULE_BOOK.keys():
+            #     relation =  RULE_BOOK[(name, key)]
+            # else:
+            #     relation = "one2many"
+            # if relation == "one2many":
+            #     id_col_string += f"{key}_index INT NOT NULL, {name}_ID INT NOT NULL);"
+            # elif relation == "many2many":
+            #     id_col_string += f"{key}_index INT NULL, {name}_ID INT NULL);"
+            id_col_string += f"{key}_index INT NULL);"
             sql_table_creation_cmds.append(id_col_string)
-            # sql_constraint_cmds.append(f"ALTER TABLE {key} ADD FOREIGN KEY (parent_fk) REFERENCES {name}(ID);")
+            sql_table_creation_cmds.append(f"ALTER TABLE {key} ADD PRIMARY KEY (ID,{key}_index);")
+            # sql_table_creation_cmds.append(f"ALTER TABLE {key} ADD FOREIGN KEY IF NOT EXISTS (ID) REFERENCES {name}(ID);")
             i = 0
             created_values = False
             for v in obj:
                 v, v_type, v_iterable = find_datatype(key+'_object', v)
                 # This means we are in the meta file, which we know the structure of.
                 if v_iterable and not created_values:
-                    col_string = f"ALTER TABLE {key+'_object'} ADD FOREIGN KEY (ID) REFERENCES {key}(array_index);"
+                    col_string = f"ALTER TABLE {key} ADD COLUMN IF NOT EXISTS {key}_index INT NULL;"
+                    sql_table_creation_cmds.append(col_string)
+                    col_string = f"ALTER TABLE {key} ADD FOREIGN KEY IF NOT EXISTS ({key}_index) REFERENCES {key}_object(ID);"
                     created_values = True
                 elif not created_values:
                     col_string = f"ALTER TABLE {key} ADD COLUMN IF NOT EXISTS array_values"
@@ -318,6 +318,8 @@ cur = conn
 # for database in databaseList:
 #   print(database)
 cur.execute(text("SET FOREIGN_KEY_CHECKS=0;"))
+cur.execute(text("DROP TABLE IF EXISTS projects"))
+cur.execute(text("DROP TABLE IF EXISTS projects_object"))
 cur.execute(text("DROP TABLE IF EXISTS keywords"))
 cur.execute(text("DROP TABLE IF EXISTS neems"))
 cur.execute(text("DROP TABLE IF EXISTS translation"))
