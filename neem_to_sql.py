@@ -128,7 +128,9 @@ def convert_to_tables(name, collection, neem_id=None):
             if all_keys_exist:
                 rows = zip(*tuple([data_to_insert[key].values()]))
                 rows_list = list(rows)
-                row = tuple(tuple(obj.values())[0])
+                row = tuple(obj.values())[0]
+                if iterable(row):
+                    row = tuple(row)
                 all_values_exist = row in rows_list  
                 if  all_values_exist:         
                     ID = rows_list.index(row) + 1
