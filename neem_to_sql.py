@@ -64,6 +64,33 @@ def print_all_collection_types(collection):
             print(obj)
     find_datatype(single_doc)
 
+def insert_column_and_value(data_to_insert, table_name, column_name, data_inserted, v, v_type):
+    key = table_name
+    col_string = f"ALTER TABLE {key} ADD COLUMN IF NOT EXISTS {column_name}"
+    id = True if key in ['_id', 'neem_id'] else False
+    data_type = py2sql(v_type, id=id)
+    if data_type is not None:
+        col_string += f" {data_type};"
+        created_values = True
+    else:
+        col_string = ""
+        created_values = False
+    
+    # Insertion
+    v = 'NULL' if v is None else v
+    # if key not in data_to_insert.keys():
+    # data_to_insert[key] = []
+    if column_name not in data_to_insert[key].keys():
+        data_to_insert[key][column_name] = [v]
+    else:
+        data_to_insert[key][column_name].append(v)
+    # if 'ID' not in data_to_insert[key].keys():
+    #     data_to_insert[key]['ID'] = ['NULL']
+    # else:
+    #     data_to_insert[key]['ID'].append('NULL')
+    return col_string, created_values
+
+data_to_insert = {}
 def convert_to_tables(name, collection, neem_id=None):
     single_doc = collection.find_one({})
     all_docs = collection.find({}, cursor_type=CursorType.EXHAUST)
@@ -75,63 +102,100 @@ def convert_to_tables(name, collection, neem_id=None):
     sql_table_creation_cmds = []
     sql_constraint_cmds = []
     seen_keys = []
-    # data_to_insert = {}
-    def find_datatype(key, obj, first=False):
+    global data_to_insert
+    def find_datatype(key, obj, first=False, parent_key=None):
+        ID = None
         if type(obj) == dict:
+            data_inserted = False
             id_col_string = f"CREATE TABLE IF NOT EXISTS {key} (ID INT NOT NULL AUTO_INCREMENT PRIMARY KEY);"
             sql_table_creation_cmds.append(id_col_string)
-            for k, v in obj.items():
-                if (key,k) in seen_keys:
-                    continue
-                v, v_type, v_iterable = find_datatype(k, v)
-                if v_iterable:
-                    col_string = f"ALTER TABLE {k} ADD FOREIGN KEY IF NOT EXISTS (ID) REFERENCES {key}(ID);"
+            
+            # Insertion                        
+            # This checks if all the keys (i.e. columns) where defined before, and have values already.
+            all_keys_exist = False
+            if key in data_to_insert.keys():
+                if type(data_to_insert[key]) == dict:
+                    all_keys_exist = all([k in data_to_insert[key].keys() for k in obj.keys()])
+            else:
+                data_to_insert[key] = {}
+                data_to_insert[key]['ID'] = []
+
+            # This is to get all values of all columns and put them together to for a complete row in the table
+            # key is table name (here it is the dict key),
+            #  and the keys and values of that dict are the column_names and their respective values
+            # For example: data_to_insert['neems']['ID'] = [id1, id2, id3], where 'neems' is the table name
+            # 'ID' is the column_name, and 'id1' to 'id3' are 3 values for 3 different rows in the 'ID' column.
+            if all_keys_exist:
+                rows = zip(*tuple([data_to_insert[key].values()]))
+                rows_list = list(rows)
+                row = tuple(tuple(obj.values())[0])
+                all_values_exist = row in rows_list  
+                if  all_values_exist:         
+                    ID = rows_list.index(row) + 1
+                    return obj, type(obj), iterable(obj) and type(obj) != str, ID
                 else:
-                    col_string = f"ALTER TABLE {key} ADD COLUMN IF NOT EXISTS {k}"
-                    id = True if k in ['_id', 'neem_id'] else False
-                    data_type = py2sql(v_type, id=id)
-                    if data_type is not None:
-                        col_string += f" {data_type};"
-                        created_values = True
+                    ID = len(rows_list) + 1
+            data_to_insert[key]['ID'].append('NULL')
+            for k, v in obj.items():
+                # if (key,k) in seen_keys:
+                    # continue
+                v, v_type, v_iterable, v_id = find_datatype(k, v, parent_key=key)
+
+                if v_iterable:
+                    if v_type != dict:
+                        col_string = f"ALTER TABLE {k} ADD FOREIGN KEY IF NOT EXISTS ({key}_ID) REFERENCES {key}(ID);"
                     else:
-                        col_string = ""
+                        col_string = f"ALTER TABLE {k} ADD FOREIGN KEY IF NOT EXISTS (ID) REFERENCES {key}(ID);"
+                else:
+                    col_string, _ = insert_column_and_value(data_to_insert, key, k, data_inserted, v, v_type)
+                    data_inserted = True
+
                 if len(col_string) > 0:
                     sql_table_creation_cmds.append(col_string)
                     seen_keys.append((key,k))
         elif iterable(obj) and type(obj) != str:
+            data_inserted = False
+            # Creation
             print("iterable of type ", type(obj))
-            id_col_string = f"CREATE TABLE IF NOT EXISTS {key} (ID INT NOT NULL,"
-            # if (name,key) in RULE_BOOK.keys():
-            #     relation =  RULE_BOOK[(name, key)]
-            # else:
-            #     relation = "one2many"
-            # if relation == "one2many":
-            #     id_col_string += f"{key}_index INT NOT NULL, {name}_ID INT NOT NULL);"
-            # elif relation == "many2many":
-            #     id_col_string += f"{key}_index INT NULL, {name}_ID INT NULL);"
-            id_col_string += f"{key}_index INT NULL);"
+            id_col_string = f"CREATE TABLE IF NOT EXISTS {key} (ID INT AUTO_INCREMENT NOT NULL PRIMARY KEY,"
+            if parent_key is None:
+                parent_key = "parent"
+            id_col_string += f"{parent_key}_ID INT NULL);"
             sql_table_creation_cmds.append(id_col_string)
-            sql_table_creation_cmds.append(f"ALTER TABLE {key} ADD PRIMARY KEY (ID,{key}_index);")
-            # sql_table_creation_cmds.append(f"ALTER TABLE {key} ADD FOREIGN KEY IF NOT EXISTS (ID) REFERENCES {name}(ID);")
-            i = 0
+
+            # Insertion
+            if key not in data_to_insert.keys():
+                data_to_insert[key] = {}
+                data_to_insert[key][key+'_index'] = []
+                data_to_insert[key][parent_key+'_ID'] = []
+                data_to_insert[key]['ID'] = []
+            parent_id = len(data_to_insert[parent_key]['ID'])
+            i = 1
+
             created_values = False
             for v in obj:
-                v, v_type, v_iterable = find_datatype(key+'_object', v)
+                # Insertion
+                data_to_insert[key][parent_key+'_ID'].append(parent_id)
+                data_to_insert[key]['ID'].append('NULL')
+
+                v, v_type, v_iterable, v_id = find_datatype(key+'_object', v, parent_key=key)
+
                 # This means we are in the meta file, which we know the structure of.
                 if v_iterable and not created_values:
                     col_string = f"ALTER TABLE {key} ADD COLUMN IF NOT EXISTS {key}_index INT NULL;"
-                    sql_table_creation_cmds.append(col_string)
+                    # sql_table_creation_cmds.append(col_string)
                     col_string = f"ALTER TABLE {key} ADD FOREIGN KEY IF NOT EXISTS ({key}_index) REFERENCES {key}_object(ID);"
-                    created_values = True
+
+                    # Insertion
+                    data_to_insert[key][key+'_index'].append(v_id)
+
+                    # created_values = True
                 elif not created_values:
-                    col_string = f"ALTER TABLE {key} ADD COLUMN IF NOT EXISTS array_values"
-                    id = True if key in ['_id', 'neem_id'] else False
-                    data_type = py2sql(v_type, id=id)
-                    if data_type is not None:
-                        col_string += f" {data_type};"
-                        created_values = True
-                    else:
-                        col_string = ""
+                    # Insertion
+                    # data_to_insert[key][key+'_index'].append(parent_id)
+                    col_string, created_values = insert_column_and_value(data_to_insert, key, f'{key}_values', data_inserted, v, v_type)
+                    data_inserted = True
+
                 i += 1
                 if len(col_string) > 0:
                     sql_table_creation_cmds.append(col_string)
@@ -139,24 +203,30 @@ def convert_to_tables(name, collection, neem_id=None):
             obj = mon2py(obj)
             print(type(obj))
             print(obj)
-        return obj, type(obj), iterable(obj) and type(obj) != str
-    find_datatype(name, single_doc, first=True)
+        return obj, type(obj), iterable(obj) and type(obj) != str, ID
+    # find_datatype(name, single_doc, first=True)
     n_doc = 0
     for doc in all_docs:
+        first = True if n_doc == 0 else False
         n_doc += 1
         if neem_id is not None:
             doc["neem_id"] = neem_id
-        find_datatype(name, doc)
+        find_datatype(name, doc, first=first)
+    
+    # sql_insert_commands.append("SET FOREIGN_KEY_CHECKS=1;")
+
     [print(sql_table_creation_cmds[i]) for i in range(len(sql_table_creation_cmds))]
     return sql_table_creation_cmds
 
 def get_insert_rows_commands(data_to_insert, columns_to_insert=None):
     sql_insert_commands = []
-    for key, rows in data_to_insert.items():
+    for key, rows_dict in data_to_insert.items():
+        
         if columns_to_insert is not None:
             cols = columns_to_insert[key]
             cols_str = str(cols).strip('[]')
-        all_rows_str = str(rows).strip('[]')
+        rows_list = list(zip(*tuple([rows_dict])))
+        all_rows_str = str(rows_list).strip('[]')
         all_rows_str = re.sub("('NULL')", "NULL", all_rows_str)
         all_rows_str = re.sub("(,\))", ")", all_rows_str)
         
@@ -171,22 +241,24 @@ def insert_to_tables(name, collection, neem_id=None):
     data_to_insert = {}
     sql_insert_commands = ["SET FOREIGN_KEY_CHECKS=0;"]
     columns_to_insert = {}
-    def insert_doc(key, obj, first=False):
+    def insert_doc(key, obj, first=False, parent_key=None):
         if type(obj) == dict:
             data_inserted = False
             for k, v in obj.items():
-                v, v_type, v_iterable = insert_doc(k, v)
+                v, v_type, v_iterable = insert_doc(k, v, parent_key=key)
                 if key not in data_to_insert.keys():
-                        data_to_insert[key] = []
-                        columns_to_insert[key] = []
+                        data_to_insert[key] = {}
+                        columns_to_insert[key] = {}
                 if v_iterable:
                     if not data_inserted:
-                        data_to_insert[key].append(['NULL'])
-                        columns_to_insert[key].append(['ID'])
+                        data_to_insert[k] = []
+                        # data_to_insert[key].append(['NULL'])
+                        # columns_to_insert[key].append(['ID'])
                         data_inserted = True
+                    data_to_insert[k][key+'_ID'] = id
                 else:
                     # if key not in data_to_insert.keys():
-                    #     data_to_insert[key] = []
+                        # data_to_insert[key] = []
                     if not data_inserted:
                         data_to_insert[key].append(['NULL', v])
                         columns_to_insert[key].append(['ID', k])
@@ -196,11 +268,51 @@ def insert_to_tables(name, collection, neem_id=None):
                     data_inserted = True
             if data_inserted:
                 data_to_insert[key][-1] = tuple(data_to_insert[key][-1])
-                # columns_to_insert[key][-1] = tuple(columns_to_insert[key][-1])
+                columns_to_insert[key][-1] = tuple(columns_to_insert[key][-1])
         elif iterable(obj) and type(obj) != str:
             print("iterable of type ", type(obj))
+            id_col_string = f"CREATE TABLE IF NOT EXISTS {key} (ID INT AUTO_INCREMENT NOT NULL PRIMARY KEY,"
+            # if (name,key) in RULE_BOOK.keys():
+            #     relation =  RULE_BOOK[(name, key)]
+            # else:
+            #     relation = "one2many"
+            # if relation == "one2many":
+            #     id_col_string += f"{key}_index INT NOT NULL, {name}_ID INT NOT NULL);"
+            # elif relation == "many2many":
+            #     id_col_string += f"{key}_index INT NULL, {name}_ID INT NULL);"
+            if parent_key is None:
+                parent_key = "parent"
+            id_col_string += f"{key}_index INT NULL, {parent_key}_ID INT NULL);"
+            sql_table_creation_cmds.append(id_col_string)
+            # sql_table_creation_cmds.append(f"ALTER TABLE {key} ADD PRIMARY KEY (ID,{key}_index);")
+            # sql_table_creation_cmds.append(f"ALTER TABLE {key} ADD FOREIGN KEY IF NOT EXISTS ({name}_ID) REFERENCES {name}(ID);")
+            data_to_insert[key][key+'_index'] = []
+            data_to_insert[key][parent_key+'_ID'] = []
+            data_to_insert[key]['ID'] = 'NULL'
+            i = 0
+            created_values = False
             for v in obj:
-                v, v_type, v_iterable = insert_doc(key, v)
+                data_to_insert[key][key+'_index'].append(i)
+                data_to_insert[key][parent_key+'_ID'].append(parent_id)
+                v, v_type, v_iterable = insert_doc(key+'_object', v, parent_key=key)
+                # This means we are in the meta file, which we know the structure of.
+                if v_iterable and not created_values:
+                    col_string = f"ALTER TABLE {key} ADD COLUMN IF NOT EXISTS {key}_index INT NULL;"
+                    sql_table_creation_cmds.append(col_string)
+                    col_string = f"ALTER TABLE {key} ADD FOREIGN KEY IF NOT EXISTS ({key}_index) REFERENCES {key}_object(ID);"
+                    created_values = True
+                elif not created_values:
+                    col_string = f"ALTER TABLE {key} ADD COLUMN IF NOT EXISTS {key}_values"
+                    id = True if key in ['_id', 'neem_id'] else False
+                    data_type = py2sql(v_type, id=id)
+                    if data_type is not None:
+                        col_string += f" {data_type};"
+                        created_values = True
+                    else:
+                        col_string = ""
+                i += 1
+                if len(col_string) > 0:
+                    sql_table_creation_cmds.append(col_string)
         else:
             obj = mon2py(obj)
         return obj, type(obj), iterable(obj) and type(obj) != str
@@ -244,8 +356,9 @@ sql_insert_cmds = []
 meta = db.meta
 print("=============meta types")
 print_all_collection_types(meta)
-sql_table_creation_cmds.extend(convert_to_tables("neems", meta))
-sql_insert_cmds.extend(insert_to_tables("neems", meta))
+creation_cmds = convert_to_tables("neems", meta)
+sql_table_creation_cmds.extend(creation_cmds)
+# sql_insert_cmds.extend(data_to_insert)
 
 cursor = db.meta.find({},cursor_type=CursorType.EXHAUST)
 all_neems = {}
@@ -261,11 +374,12 @@ for doc in cursor:
     # print("=============tf types")
     # print_all_collection_types(tf)
     creation_time_s = time()
-    sql_table_creation_cmds.extend(convert_to_tables("tf", tf, neem_id=doc['_id']))
+    creation_cmds = convert_to_tables("tf", tf, neem_id=doc['_id'])
+    sql_table_creation_cmds.extend(creation_cmds)
     print("Creation Time = ", time() - creation_time_s)
-    insertion_time_s = time()
-    sql_insert_cmds.extend(insert_to_tables("tf", tf, neem_id=doc['_id']))
-    print("Insertion Time = ", time() - insertion_time_s)
+    # insertion_time_s = time()
+    sql_insert_cmds.extend(get_insert_rows_commands(data_to_insert))
+    # print("Insertion Time = ", time() - insertion_time_s)
     if n_doc >= 1:
         break
     continue
@@ -319,6 +433,7 @@ cur = conn
 #   print(database)
 cur.execute(text("SET FOREIGN_KEY_CHECKS=0;"))
 cur.execute(text("DROP TABLE IF EXISTS projects"))
+cur.execute(text("DROP TABLE IF EXISTS activity"))
 cur.execute(text("DROP TABLE IF EXISTS projects_object"))
 cur.execute(text("DROP TABLE IF EXISTS keywords"))
 cur.execute(text("DROP TABLE IF EXISTS neems"))
