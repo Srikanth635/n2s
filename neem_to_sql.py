@@ -15,17 +15,6 @@ from sqlalchemy import create_engine
 from sqlalchemy import text
 
 
-RULE_BOOK = {("neems","projects"):"many2many"}
-
-def getconn():
-    # SQLALCHEMY_DATABASE_URI = f"mysql+pymysql://{User}:{Password}@{Host}/{'test'}"
-    c = create_engine('mysql://{}:{}@{}/{}?charset=utf8mb4'.format(User, Password, Host, 'test'), pool_pre_ping=True, pool_recycle=500, pool_timeout=500)
-    # c = pymysql.connect(host=Host, user=User, password=Password, database='test',)
-    return c
-
-# mypool = pool.Pool(getconn, pre_ping=True, recycle=300).connect()
-
-
 # mongo_to_python_conversions
 def mon2py(val):
     if type(val) == Decimal128:
@@ -119,7 +108,7 @@ def convert_to_tables(name, collection, neem_id=None):
                         all_keys_exist = all([k in data_to_insert[key].keys() for k in obj.keys()])
                 for k in obj.keys():
                     if k not in data_to_insert[key].keys() and (not np.iterable(obj[k]) or type(obj[k])==str):
-                        obj[k] = [obj[k]]
+                        obj[k] = [obj[k]] # WARNING: Need to check if I need to do that everytime I encounter it again.
             else:
                 data_to_insert[key] = {}
                 data_to_insert[key]['ID'] = []
@@ -290,16 +279,16 @@ for doc in cursor:
     convert_to_tables("tf", tf, neem_id=doc['_id'])
     print("Creation Time = ", time() - creation_time_s)
 
-    # annotations = db.get_collection(id + '_annotations')
-    # convert_to_tables("annotations", annotations, neem_id=doc['_id'])
+    annotations = db.get_collection(id + '_annotations')
+    convert_to_tables("annotations", annotations, neem_id=doc['_id'])
     # print("============annotation types")
     # print_all_collection_types(annotations)
     triples = db.get_collection(id + '_triples')
     convert_to_tables("triples", triples, neem_id=doc['_id'])
     # print("============triples types")
     # print_all_collection_types(triples)
-    # inferred = db.get_collection(id + '_inferred')
-    # convert_to_tables("inferred", inferred, neem_id=doc['_id'])
+    inferred = db.get_collection(id + '_inferred')
+    convert_to_tables("inferred", inferred, neem_id=doc['_id'])
     # print("============infered types")
     # print_all_collection_types(inferred)
     if n_doc >= 1:
@@ -332,50 +321,42 @@ User = "newuser"
 # Password for the database user
 Password = os.environ['MYSQL_USER_PASS']           
   
-# conn  = pymysql.connect(host=Host, user=User, password=Password, database='test',)
 # get a connection
-mypool = create_engine('mysql+pymysql://{}:{}@{}/{}?charset=utf8mb4'.format(User, Password, Host, 'test'))
+mypool = create_engine('mysql+pymysql://{}:{}@{}/{}?charset=utf8mb4'.format(User, Password, Host, 'test'), pool_pre_ping=True, pool_recycle=300, pool_timeout=500)
 conn = mypool.connect()
 
-# Create a cursor object
-# cur  = conn.cursor()
-cur = conn
-# cur.execute(text("SHOW DATABASES"))
-# databaseList = cur.fetchall()
-  
-# for database in databaseList:
-#   print(database)
-cur.execute(text("SET FOREIGN_KEY_CHECKS=0;"))
+
+conn.execute(text("SET FOREIGN_KEY_CHECKS=0;"))
 for key in data_to_insert.keys():
     if '*' in key:
         key = re.sub("(\*)","_star", key)
-    cur.execute(text(f"drop table if exists {key};"))
-cur.execute(text("SET FOREIGN_KEY_CHECKS=1;"))
+    conn.execute(text(f"drop table if exists {key};"))
+conn.execute(text("SET FOREIGN_KEY_CHECKS=1;"))
 
 
-cur.commit()
-# cur.execute(text("CREATE TABLE neems "))
+conn.commit()
+# conn.execute(text("CREATE TABLE neems "))
 for cmd in sql_table_creation_cmds:
     if '*' in cmd:
         cmd = re.sub("(\*)","_star", cmd)
     # # To execute the SQL query
-    cur.execute(text(cmd))
+    conn.execute(text(cmd))
 
     # # To commit the changes
-    cur.commit()
+    conn.commit()
 
-cur.execute(text("SET FOREIGN_KEY_CHECKS=0;"))
+conn.execute(text("SET FOREIGN_KEY_CHECKS=0;"))
 for cmd in sql_insert_cmds:
     if '*' in cmd:
         cmd = re.sub("(\*)","_star", cmd)
     # # To execute the SQL query
-    cur.execute(text(cmd))
+    conn.execute(text(cmd))
    
     # # To commit the changes
-    cur.commit()
-cur.execute(text("SET FOREIGN_KEY_CHECKS=1;"))
-cur.commit()
+    conn.commit()
+conn.execute(text("SET FOREIGN_KEY_CHECKS=1;"))
+conn.commit()
 
   
-cur.close()
+conn.close()
 
