@@ -13,6 +13,7 @@ from time import time
 import sqlalchemy.pool as pool
 from sqlalchemy import create_engine
 from sqlalchemy import text
+from copy import deepcopy
 
 
 # mongo_to_python_conversions
@@ -63,10 +64,15 @@ def print_all_collection_types(collection):
 def insert_column_and_value(data_to_insert, table_name, column_name, v, v_type):
     key = table_name
     col_string = f"ALTER TABLE {key} ADD COLUMN IF NOT EXISTS {column_name}"
-    id = True if key in ['_id', 'neem_id'] else False
+    id = True if column_name in ['_id', 'neem_id'] else False
     data_type = py2sql(v_type, id=id)
     if data_type is not None:
-        col_string += f" {data_type};"
+        col_string += f" {data_type}"
+        if id:
+            col_string += " NOT NULL"
+            if column_name == '_id':
+                col_string += " UNIQUE"
+        col_string += ";"
     else:
         col_string = ""
     
@@ -218,13 +224,17 @@ def convert_to_tables(name, collection, neem_id=None):
                 first = True if n_doc == 0 else False
                 n_doc += 1
                 if neem_id is not None:
-                    doc["neem_id"] = neem_id
+                    doc["neem_id"] = deepcopy(neem_id)
                 find_datatype(name, doc, first=first)
             done = True
         except errors.InvalidBSON:
             doc = None
             print(f"BSON Error at doc with ID {last_doc_id} for {name} with neem_id {neem_id}")
             all_docs = db.get_collection(str(neem_id) + "_" + name).find({"_id":{"$gt":last_doc_id}}, cursor_type=CursorType.EXHAUST)
+    if neem_id is not None:
+        col_string = f"ALTER TABLE {name} ADD FOREIGN KEY IF NOT EXISTS (neem_id) REFERENCES neems(_id);"
+        if col_string not in sql_table_creation_cmds:
+            sql_table_creation_cmds.append(col_string)
     print(n_doc)
 
 def get_insert_rows_commands(data_to_insert, columns_to_insert=None, max_rows_per_cmd=100000):
