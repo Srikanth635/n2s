@@ -241,6 +241,7 @@ def get_insert_rows_commands(data_to_insert, columns_to_insert=None, max_rows_pe
             all_rows_str = str(rows_list[i:i+max_rows_per_cmd]).strip('[]')
             all_rows_str = re.sub("('NULL')", "NULL", all_rows_str)
             all_rows_str = re.sub("(,\))", ")", all_rows_str)
+            all_rows_str = re.sub("(:)", "\:", all_rows_str)
             cols_str = re.sub("(,\))", ")", cols_str)
             
             sql_insert_commands.append(f"INSERT INTO {key} {cols_str} VALUES {all_rows_str};")
@@ -322,9 +323,9 @@ User = "newuser"
 Password = os.environ['MYSQL_USER_PASS']           
   
 # get a connection
-mypool = create_engine('mysql+pymysql://{}:{}@{}/{}?charset=utf8mb4'.format(User, Password, Host, 'test'), pool_pre_ping=True, pool_recycle=300, pool_timeout=500)
+#, pool_pre_ping=True, pool_recycle=300, pool_timeout=500
+mypool = create_engine('mysql+pymysql://{}:{}@{}/{}?charset=utf8mb4'.format(User, Password, Host, 'test'))
 conn = mypool.connect()
-
 
 conn.execute(text("SET FOREIGN_KEY_CHECKS=0;"))
 for key in data_to_insert.keys():
