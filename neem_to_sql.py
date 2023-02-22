@@ -155,7 +155,7 @@ def convert_to_tables(name, collection, neem_id=None):
                     if col_string not in sql_table_creation_cmds:
                         sql_table_creation_cmds.append(col_string)
             for k, v in data_to_insert[key].items():
-                if k not in obj.keys():
+                if k not in obj.keys() and k != "ID":
                     data_to_insert[key][k].append('NULL')
         elif np.iterable(obj) and type(obj) != str:
             # Creation
@@ -292,7 +292,7 @@ for doc in cursor:
     convert_to_tables("inferred", inferred, neem_id=doc['_id'])
     # print("============infered types")
     # print_all_collection_types(inferred)
-    if n_doc >= 1:
+    if n_doc >= 2:
         break
     continue
     all_neems[id] = {'tf':tf, 'annotations':annotations, 'triples':triples, 'inferred':inferred, 'meta_data':doc}
