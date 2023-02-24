@@ -4,9 +4,7 @@ from pymongo.cursor import CursorType
 from bson.objectid import ObjectId
 from bson.decimal128 import Decimal128
 from bson import errors
-import pymysql
 import numpy as np
-import decimal
 from datetime import datetime
 import re
 from time import time
@@ -14,7 +12,6 @@ import sqlalchemy.pool as pool
 from sqlalchemy import create_engine
 from sqlalchemy import text
 from copy import deepcopy
-import json
 
 
 # mongo_to_python_conversions
@@ -88,7 +85,7 @@ def insert_column_and_value(data_to_insert, table_name, column_name, v, v_type):
         data_to_insert[key][column_name].append(v)
     return col_string
 
-def convert_to_sql(key, obj, first=False, parent_key=None, parent_iterable=False):
+def convert_to_sql(key, obj, sql_table_creation_cmds, data_to_insert, parent_key=None, parent_iterable=False):
     ID = None
     if '#' in key:
         key = key.split('#')[1]
@@ -142,7 +139,7 @@ def convert_to_sql(key, obj, first=False, parent_key=None, parent_iterable=False
         for k, v in obj.items():
             if '#' in k:
                 k = k.split('#')[1]
-            v, v_type, v_iterable, v_id = convert_to_sql(k, v, parent_key=key, parent_iterable=False)
+            v, v_type, v_iterable, v_id = convert_to_sql(k, v, sql_table_creation_cmds, data_to_insert, parent_key=key, parent_iterable=False)
 
             if v_iterable:
                 if v_type != dict:
@@ -184,7 +181,7 @@ def convert_to_sql(key, obj, first=False, parent_key=None, parent_iterable=False
                 v = {'value':v}
             # if v == {'@list':[]}:
             #     print("hey")
-            v, v_type, v_iterable, v_id = convert_to_sql(parent_key+'_'+key+'_object', v, parent_key=parent_key+'_'+key, parent_iterable=True)
+            v, v_type, v_iterable, v_id = convert_to_sql(parent_key+'_'+key+'_object', v, sql_table_creation_cmds, data_to_insert, parent_key=parent_key+'_'+key, parent_iterable=True)
 
             # This means we are in the meta file, which we know the structure of.
             if v_iterable:
@@ -214,8 +211,7 @@ def convert_to_sql(key, obj, first=False, parent_key=None, parent_iterable=False
         obj = mon2py(obj)
     return obj, type(obj), np.iterable(obj) and type(obj) != str, ID
 
-data_to_insert = {}
-def convert_to_tables(name, collection, neem_id=None):
+def neem_collection_to_sql(name, collection, sql_table_creation_cmds, data_to_insert, neem_id=None):
     single_doc = collection.find_one({})
     all_docs = collection.find({}, cursor_type=CursorType.EXHAUST)
     if single_doc is None:
@@ -223,8 +219,6 @@ def convert_to_tables(name, collection, neem_id=None):
         return []
     if neem_id is not None:
         single_doc["neem_id"] = neem_id
-    global sql_table_creation_cmds
-    global data_to_insert
     n_doc = 0
     done = False
     last_doc_id = None
@@ -232,11 +226,10 @@ def convert_to_tables(name, collection, neem_id=None):
         try:
             for doc in all_docs:
                 last_doc_id = doc['_id']
-                first = True if n_doc == 0 else False
                 n_doc += 1
                 if neem_id is not None:
                     doc["neem_id"] = deepcopy(neem_id)
-                convert_to_sql(name, doc, first=first)
+                convert_to_sql(name, doc, sql_table_creation_cmds, data_to_insert)
             done = True
         except errors.InvalidBSON:
             doc = None
@@ -268,130 +261,137 @@ def get_insert_rows_commands(data_to_insert, columns_to_insert=None, max_rows_pe
             sql_insert_commands.append(f"INSERT INTO {key} {cols_str} VALUES {all_rows_str};")
     return sql_insert_commands
 
-# Replace the uri string with your MongoDB deployment's connection string.
-MONGODB_URI = os.environ["LOCAL_MONGODB_URI"]
-# set a 5-second connection timeout
-client = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=5000, unicode_decode_error_handler='ignore')
 
-try:
-    client.server_info()
-    # print(client.server_info())
-except Exception:
-    print("Unable to connect to the server.")
+def upload_data_to_sql(sql_table_creation_cmds, data_to_insert, sqlalchemy_engine, drop_tables=True):
 
-db = client.neems
+    conn = sqlalchemy_engine.connect()
+    insertion_time_s = time()
+    sql_insert_cmds = get_insert_rows_commands(data_to_insert)
+    print("Insertion Time = ", time() - insertion_time_s)
 
-sql_table_creation_cmds = []
-meta = db.meta
-print("=============meta types")
-# print_all_collection_types(meta)
-convert_to_tables("neems", meta)
+    if drop_tables:
+        conn.execute(text("SET FOREIGN_KEY_CHECKS=0;"))
+        for key in data_to_insert.keys():
+            if '*' in key:
+                key = re.sub("(\*)","_star", key)
+            if '@' in key:
+                key = re.sub("(@)","_", key)
+            conn.execute(text(f"drop table if exists {key};"))
+        conn.execute(text("SET FOREIGN_KEY_CHECKS=1;"))
 
-cursor = db.meta.find({},cursor_type=CursorType.EXHAUST)
-all_neems = {}
-neem_ids = []
-n_doc = 0
-for doc in cursor:
-    n_doc += 1
-    print(doc)
-    id = str(doc['_id'])
-    neem_ids.append(id)
-    tf = db.get_collection(id + '_tf')
+
+    conn.commit()
+    # conn.execute(text("CREATE TABLE neems "))
+    for cmd in sql_table_creation_cmds:
+        if '*' in cmd:
+            cmd = re.sub("(\*)","_star", cmd)
+        if '@' in cmd:
+            cmd = re.sub("(@)","_", cmd)
+        # # To execute the SQL query
+        conn.execute(text(cmd))
+
+        # # To commit the changes
+        conn.commit()
+
+    conn.execute(text("SET FOREIGN_KEY_CHECKS=0;"))
+    for cmd in sql_insert_cmds:
+        if '*' in cmd:
+            cmd = re.sub("(\*)","_star", cmd)
+        if '@' in cmd:
+            cmd = re.sub("(@)","_", cmd)
+        # # To execute the SQL query
+        conn.execute(text(cmd))
+    
+        # # To commit the changes
+        conn.commit()
+    conn.execute(text("SET FOREIGN_KEY_CHECKS=1;"))
+    conn.commit()
+
+    
+    conn.close()
+
+if __name__ == "__main__":
+
+    # Replace the uri string with your MongoDB deployment's connection string.
+    MONGODB_URI = os.environ["LOCAL_MONGODB_URI"]
+    # set a 5-second connection timeout
+    client = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=5000, unicode_decode_error_handler='ignore')
+
+    try:
+        client.server_info()
+        # print(client.server_info())
+    except Exception:
+        print("Unable to connect to the server.")
+
+    db = client.neems
+
+    all_collections_data_to_insert = {}
+    all_collections_creation_cmds = []
+    meta = db.meta
+    neem_collection_to_sql("neems",
+                      meta,
+                      all_collections_creation_cmds,
+                      all_collections_data_to_insert)
+
+    cursor = db.meta.find({},cursor_type=CursorType.EXHAUST)
+    all_neems = {}
+    neem_ids = []
+    n_doc = 0
     creation_time_s = time()
-    convert_to_tables("tf", tf, neem_id=doc['_id'])
+    for doc in cursor:
+        n_doc += 1
+        print(doc)
+        id = str(doc['_id'])
+        neem_ids.append(id)
+        tf = db.get_collection(id + '_tf')
+        neem_collection_to_sql("tf",
+                          tf,
+                          all_collections_creation_cmds,
+                          all_collections_data_to_insert,
+                          neem_id=doc['_id'])
+        annotations = db.get_collection(id + '_annotations')
+        neem_collection_to_sql("annotations",
+                          annotations,
+                          all_collections_creation_cmds,
+                          all_collections_data_to_insert,
+                          neem_id=doc['_id'])
+        triples = db.get_collection(id + '_triples')
+        neem_collection_to_sql("triples",
+                          triples,
+                          all_collections_creation_cmds,
+                          all_collections_data_to_insert,
+                          neem_id=doc['_id'])
+        inferred = db.get_collection(id + '_inferred')
+        neem_collection_to_sql("inferred",
+                          inferred,
+                          all_collections_creation_cmds,
+                          all_collections_data_to_insert,
+                          neem_id=doc['_id'])
+        if n_doc >= 2:
+            break
+
+    client.close()
     print("Creation Time = ", time() - creation_time_s)
+    print("number of docs = {}".format(n_doc))
 
-    annotations = db.get_collection(id + '_annotations')
-    convert_to_tables("annotations", annotations, neem_id=doc['_id'])
-    # print("============annotation types")
-    # print_all_collection_types(annotations)
-    triples = db.get_collection(id + '_triples')
-    convert_to_tables("triples", triples, neem_id=doc['_id'])
-    # print("============triples types")
-    # print_all_collection_types(triples)
-    inferred = db.get_collection(id + '_inferred')
-    convert_to_tables("inferred", inferred, neem_id=doc['_id'])
-    # print("============infered types")
-    # print_all_collection_types(inferred)
-    if n_doc >= 1:
-        break
-    continue
-    all_neems[id] = {'tf':tf, 'annotations':annotations, 'triples':triples, 'inferred':inferred, 'meta_data':doc}
-    # print(all_neems[name])
-    # if doc['_id'] == ObjectId('5fdca422f5f14142fe678936'):
-    #     print(doc['name'], doc['_id'])
-
-triples_data = json.load(open('test.json'))
-n_doc = 0
-name = "restructred_triples"
-for doc in triples_data:
-    first = True if n_doc == 0 else False
-    n_doc += 1
-    convert_to_sql(name, doc, first=first)
-
-insertion_time_s = time()
-sql_insert_cmds = get_insert_rows_commands(data_to_insert)
-print("Insertion Time = ", time() - insertion_time_s)
-
-print("number of docs = {}".format(n_doc))
-
-client.close()
-
-import os
-
-
-# Create a connection object
-# IP address of the MySQL database server
-Host = "localhost" 
-  
-# User name of the database server
-User = "newuser"       
-  
-# Password for the database user
-Password = os.environ['MYSQL_USER_PASS']           
-  
-# get a connection
-#, pool_pre_ping=True, pool_recycle=300, pool_timeout=500
-mypool = create_engine('mysql+pymysql://{}:{}@{}/{}?charset=utf8mb4'.format(User, Password, Host, 'test'))
-conn = mypool.connect()
-
-conn.execute(text("SET FOREIGN_KEY_CHECKS=0;"))
-for key in data_to_insert.keys():
-    if '*' in key:
-        key = re.sub("(\*)","_star", key)
-    if '@' in key:
-        key = re.sub("(@)","_", key)
-    conn.execute(text(f"drop table if exists {key};"))
-conn.execute(text("SET FOREIGN_KEY_CHECKS=1;"))
-
-
-conn.commit()
-# conn.execute(text("CREATE TABLE neems "))
-for cmd in sql_table_creation_cmds:
-    if '*' in cmd:
-        cmd = re.sub("(\*)","_star", cmd)
-    if '@' in cmd:
-        cmd = re.sub("(@)","_", cmd)
-    # # To execute the SQL query
-    conn.execute(text(cmd))
-
-    # # To commit the changes
-    conn.commit()
-
-conn.execute(text("SET FOREIGN_KEY_CHECKS=0;"))
-for cmd in sql_insert_cmds:
-    if '*' in cmd:
-        cmd = re.sub("(\*)","_star", cmd)
-    if '@' in cmd:
-        cmd = re.sub("(@)","_", cmd)
-    # # To execute the SQL query
-    conn.execute(text(cmd))
-   
-    # # To commit the changes
-    conn.commit()
-conn.execute(text("SET FOREIGN_KEY_CHECKS=1;"))
-conn.commit()
-
-  
-conn.close()
-
+    # triples_data = json.load(open('test.json'))
+    # n_doc = 0
+    # n_type = 0
+    # name = "restructred_triples"
+    # for doc in triples_data:
+    #     first = True if n_doc == 0 else False
+    #     n_doc += 1
+    #     if '@type' in doc:
+    #         n_type += 1
+    #     else:
+    #         print(doc['@id'])
+    #     convert_to_sql(name, doc, sql_table_creation_cmds, data_to_insert, first=first)
+    # print(n_doc)
+    # print(n_type)
+    # exit()
+     
+    # get a connection
+    #, pool_pre_ping=True, pool_recycle=300, pool_timeout=500
+    sql_url = os.environ["LOCAL_SQL_URL"]
+    engine = create_engine(sql_url)
+    upload_data_to_sql(all_collections_creation_cmds, all_collections_data_to_insert, engine)
