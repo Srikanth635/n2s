@@ -2,7 +2,8 @@ import os
 from sqlalchemy import create_engine, text
 from rdflib import Graph, URIRef, RDF, RDFS, OWL, Literal, Namespace, XSD
 import json
-from restructure_triples_and_neems import convert_to_sql, upload_data_to_sql
+from restructure_triples_and_neems import json_to_sql
+from sqlalchemy import create_engine
 
 
 data_types = {'types': [], 'values': []}
@@ -81,6 +82,7 @@ g.bind("iai-kitchen-knowledge", iai_kitchen_knowledge)
 g.bind("knowrob", knowrob)
 g.bind("iai-kitchen-objects", iai_kitchen_objects)
 g.bind("srdl2-comp", srdl2_comp)
+
 for v in curr:
     # print(type(v[0]))
     new_v = [0, 0, 0]
@@ -90,23 +92,13 @@ for v in curr:
     # break
 conn.commit()
 conn.close()
-print(g.serialize(format='json-ld', encoding='utf-8', destination="test.json"))
+g.serialize(format='json-ld', encoding='utf-8', destination="test.json")
 
 triples_data = json.load(open('test.json'))
-n_doc = 0
-n_type = 0
+sql_url = os.environ['LOCAL_SQL_URL']
+engine = create_engine(sql_url)
 name = "restructred_triples"
-for doc in triples_data:
-    first = True if n_doc == 0 else False
-    n_doc += 1
-    if '@type' in doc:
-        n_type += 1
-    else:
-        print(doc['@id'])
-    convert_to_sql(name, doc, first=first)
-print(n_doc)
-print(n_type)
-
+json_to_sql(name, triples_data, engine)
 sql_creation_cmds = []
 tables = {"classes":{'uri': [], 'name': []}}
 # sql_creation_cmds.append('DROP TABLE IF EXISTS `triples_restructured`;')

@@ -261,54 +261,70 @@ def get_insert_rows_commands(data_to_insert, columns_to_insert=None, max_rows_pe
             sql_insert_commands.append(f"INSERT INTO {key} {cols_str} VALUES {all_rows_str};")
     return sql_insert_commands
 
+def _drop_tables(data, conn):
+    conn.execute(text("SET FOREIGN_KEY_CHECKS=0;"))
+    for key in data.keys():
+        if '*' in key:
+            key = re.sub("(\*)","_star", key)
+        if '@' in key:
+            key = re.sub("(@)","_", key)
+        conn.execute(text(f"drop table if exists {key};"))
+    conn.execute(text("SET FOREIGN_KEY_CHECKS=1;"))
+
+def _execute_cmds(sql_cmds, conn):
+    for cmd in sql_cmds:
+        if '*' in cmd:
+            cmd = re.sub("(\*)","_star", cmd)
+        if '@' in cmd:
+            cmd = re.sub("(@)","_", cmd)
+        # # To execute the SQL query
+        conn.execute(text(cmd))
+    
+        # # To commit the changes
+        conn.commit()
 
 def upload_data_to_sql(sql_table_creation_cmds, data_to_insert, sqlalchemy_engine, drop_tables=True):
 
+    # Create a connection
     conn = sqlalchemy_engine.connect()
+
+    # Get the inertion cmds
     insertion_time_s = time()
     sql_insert_cmds = get_insert_rows_commands(data_to_insert)
     print("Insertion Time = ", time() - insertion_time_s)
 
     if drop_tables:
-        conn.execute(text("SET FOREIGN_KEY_CHECKS=0;"))
-        for key in data_to_insert.keys():
-            if '*' in key:
-                key = re.sub("(\*)","_star", key)
-            if '@' in key:
-                key = re.sub("(@)","_", key)
-            conn.execute(text(f"drop table if exists {key};"))
-        conn.execute(text("SET FOREIGN_KEY_CHECKS=1;"))
+        _drop_tables(data_to_insert, conn)
 
-
-    conn.commit()
-    # conn.execute(text("CREATE TABLE neems "))
-    for cmd in sql_table_creation_cmds:
-        if '*' in cmd:
-            cmd = re.sub("(\*)","_star", cmd)
-        if '@' in cmd:
-            cmd = re.sub("(@)","_", cmd)
-        # # To execute the SQL query
-        conn.execute(text(cmd))
-
-        # # To commit the changes
-        conn.commit()
-
-    conn.execute(text("SET FOREIGN_KEY_CHECKS=0;"))
-    for cmd in sql_insert_cmds:
-        if '*' in cmd:
-            cmd = re.sub("(\*)","_star", cmd)
-        if '@' in cmd:
-            cmd = re.sub("(@)","_", cmd)
-        # # To execute the SQL query
-        conn.execute(text(cmd))
+    # Create tables
+    _execute_cmds(sql_table_creation_cmds, conn)
     
-        # # To commit the changes
-        conn.commit()
+    # Insert data
+    conn.execute(text("SET FOREIGN_KEY_CHECKS=0;"))
+    _execute_cmds(sql_insert_cmds, conn)
     conn.execute(text("SET FOREIGN_KEY_CHECKS=1;"))
     conn.commit()
-
     
+    # Close the connection
     conn.close()
+
+def json_to_sql(top_table_name, json_data, sqlalachemy_engine, filter_doc=None, drop_tables=True):
+    n_doc = 0
+    data_to_insert = {}
+    sql_creation_cmds = []
+    for doc in json_data:
+        if filter_doc is not None:
+            name, doc = filter_doc(doc)
+            if doc is None:
+                continue
+            if name is None:
+                name = top_table_name
+        if n_doc == 0:
+            name = top_table_name
+        convert_to_sql(name, doc, sql_creation_cmds,data_to_insert)
+        n_doc += 1
+    print("number_of_json_documents = ", n_doc)
+    upload_data_to_sql(sql_creation_cmds, data_to_insert, sqlalachemy_engine, drop_tables=drop_tables)
 
 if __name__ == "__main__":
 
@@ -373,22 +389,6 @@ if __name__ == "__main__":
     client.close()
     print("Creation Time = ", time() - creation_time_s)
     print("number of docs = {}".format(n_doc))
-
-    # triples_data = json.load(open('test.json'))
-    # n_doc = 0
-    # n_type = 0
-    # name = "restructred_triples"
-    # for doc in triples_data:
-    #     first = True if n_doc == 0 else False
-    #     n_doc += 1
-    #     if '@type' in doc:
-    #         n_type += 1
-    #     else:
-    #         print(doc['@id'])
-    #     convert_to_sql(name, doc, sql_table_creation_cmds, data_to_insert, first=first)
-    # print(n_doc)
-    # print(n_type)
-    # exit()
      
     # get a connection
     #, pool_pre_ping=True, pool_recycle=300, pool_timeout=500
