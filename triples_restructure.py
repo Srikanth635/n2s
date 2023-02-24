@@ -4,6 +4,7 @@ from rdflib import Graph, URIRef, RDF, RDFS, OWL, Literal, Namespace, XSD
 import json
 from restructure_triples_and_neems import json_to_sql
 from sqlalchemy import create_engine
+import re
 
 
 data_types = {'types': [], 'values': []}
@@ -34,26 +35,7 @@ def xsd_2_mysql_type(property_name, o):
         elif value == soma.array_double:
             return 'DOUBLE'
         else:
-            return 'VARCHAR(255)'
-    
-
-# Create a connection object
-# IP address of the MySQL database server
-Host = "localhost" 
-  
-# User name of the database server
-User = "newuser"       
-  
-# Password for the database user
-Password = os.environ['MYSQL_USER_PASS']           
-  
-# get a connection
-mypool = create_engine('mysql+pymysql://{}:{}@{}/{}?charset=utf8mb4'.format(User, Password, Host, 'test'), pool_pre_ping=True, pool_recycle=300, pool_timeout=500)
-conn = mypool.connect()
-
-curr = conn.execute(text("""SELECT s, p, o
-FROM test.triples
-ORDER BY _id;"""))
+            return 'VARCHAR(255)'         
 
 g = Graph(bind_namespaces="rdflib")
 soma = Namespace("http://www.ease-crc.org/ont/SOMA.owl#")
@@ -83,26 +65,54 @@ g.bind("knowrob", knowrob)
 g.bind("iai-kitchen-objects", iai_kitchen_objects)
 g.bind("srdl2-comp", srdl2_comp)
 
-for v in curr:
-    # print(type(v[0]))
-    new_v = [0, 0, 0]
-    for i in range(3):
-        new_v[i] = URIRef(v[i]) if '#' in v[i] else Literal(v[i])
-    g.add((new_v[0], new_v[1], new_v[2]))
-    # break
-conn.commit()
-conn.close()
-g.serialize(format='json-ld', encoding='utf-8', destination="test.json")
-
-triples_data = json.load(open('test.json'))
+# Create sqlalchemy engine
 sql_url = os.environ['LOCAL_SQL_URL']
 engine = create_engine(sql_url)
+
+# get a connection
+# conn = engine.connect()
+# curr = conn.execute(text("""SELECT s, p, o
+# FROM test.triples
+# ORDER BY _id;"""))
+
+# for v in curr:
+#     # print(type(v[0]))
+#     new_v = [0, 0, 0]
+#     for i in range(3):
+#         new_v[i] = URIRef(v[i]) if '#' in v[i] else Literal(v[i])
+#     g.add((new_v[0], new_v[1], new_v[2]))
+#     # break
+# conn.commit()
+# conn.close()
+
+# Create a json file from the graph
+# g.serialize(format='json-ld', encoding='utf-8', destination="test.json")
+
+def triples_json_filter_func(doc):
+    if '@type' in doc.keys():
+        name = [dtype.split('#')[1] for dtype in doc['@type']]
+        name = [re.sub("(_:)", "", n) for n in name]
+        for n in name:
+            # if 'NamedIndividual' not in n\
+            #       and 'Description' not in n\
+            #         and 'List' not in n:
+            #     return n, doc
+            if 'NamedIndividual' in n:
+                for n2 in name:
+                    if 'NamedIndividual' not in n2\
+                          and 'Description' not in n2\
+                            and 'List' not in n2:
+                        return n2, doc
+
+    return None, doc
+
+# Create a sql database from the json file
+triples_data = json.load(open('test.json'))
 name = "restructred_triples"
-json_to_sql(name, triples_data, engine)
-sql_creation_cmds = []
+json_to_sql(name, triples_data, engine, filter_doc=triples_json_filter_func)
+
+
 tables = {"classes":{'uri': [], 'name': []}}
-# sql_creation_cmds.append('DROP TABLE IF EXISTS `triples_restructured`;')
-# sql_creation_cmds.append('CREATE TABLE `triples_restructured` (ID INT NOT NULL AUTO_INCREMENT PRIMARY KEY);')
 # get all named individuals in the object position
 # for every named individual, get all triples where the subject is the named individual
 for named_individual, _, _ in g.triples((None, RDF.type, OWL.NamedIndividual)):

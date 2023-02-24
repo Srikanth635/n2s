@@ -85,7 +85,7 @@ def insert_column_and_value(data_to_insert, table_name, column_name, v, v_type):
         data_to_insert[key][column_name].append(v)
     return col_string
 
-def convert_to_sql(key, obj, sql_table_creation_cmds, data_to_insert, parent_key=None, parent_iterable=False):
+def convert_to_sql(key, obj, sql_table_creation_cmds, data_to_insert, parent_key=None, parent_iterable=False, avoid_links=None):
     ID = None
     if '#' in key:
         key = key.split('#')[1]
@@ -94,6 +94,17 @@ def convert_to_sql(key, obj, sql_table_creation_cmds, data_to_insert, parent_key
         if id_col_string not in sql_table_creation_cmds:
             sql_table_creation_cmds.append(id_col_string)
         
+        if avoid_links is not None:
+            obj_cp = deepcopy(obj)
+            for k, v in obj_cp.items():
+                if '#' in k:
+                    k = k.split('#')[1]
+                if (f"{key+'_'+k}",f"{key}_ID",f"{key}", "ID") in avoid_links: # means it was a list
+                    obj[k] = v[0]
+                elif (f"{k}","ID",f"{key}", "ID") in avoid_links: # means it was a dict
+                    obj.update(v)
+
+
         # Insertion                        
         # This checks if all the keys (i.e. columns) where defined before, and have values already.
         all_keys_exist = False
@@ -134,6 +145,7 @@ def convert_to_sql(key, obj, sql_table_creation_cmds, data_to_insert, parent_key
         data_to_insert[key]['ID'].append('NULL')
 
 
+
         # Go through all columns, create them if new, and create foreign keys to nested tables/dicts
         # Finally insert values.
         for k, v in obj.items():
@@ -164,6 +176,19 @@ def convert_to_sql(key, obj, sql_table_creation_cmds, data_to_insert, parent_key
         id_col_string += f"{parent_key}_ID INT NULL);"
         if id_col_string not in sql_table_creation_cmds:
             sql_table_creation_cmds.append(id_col_string)
+        
+        normal_v = []
+        if avoid_links is not None:
+            obj_cp = deepcopy(obj)
+            for v in obj_cp:
+                if (f"{parent_key}+'_'+{key}",f"{parent_key+'_'+key}_index",f"{parent_key+'_'+key}_object", "ID") in avoid_links: # means it was a list
+                    v_iterable = np.iterable(v) and type(v) != str
+                    if v_iterable:
+                        if type(v) == dict:
+                            v = list(v.values())[0]
+                        else:
+                            v = v[0]
+                    normal_v.append(v)
 
         # Insertion
         if parent_key+'_'+key not in data_to_insert.keys():
@@ -177,7 +202,7 @@ def convert_to_sql(key, obj, sql_table_creation_cmds, data_to_insert, parent_key
             # Insertion
             data_to_insert[parent_key+'_'+key][parent_key+'_ID'].append(parent_id)
             data_to_insert[parent_key+'_'+key]['ID'].append('NULL')
-            if (not np.iterable(v)) or type(v) == str:
+            if ((not np.iterable(v)) or type(v) == str) and v not in normal_v:
                 v = {'value':v}
             # if v == {'@list':[]}:
             #     print("hey")
@@ -185,6 +210,7 @@ def convert_to_sql(key, obj, sql_table_creation_cmds, data_to_insert, parent_key
 
             # This means we are in the meta file, which we know the structure of.
             if v_iterable:
+                # links.append((f"{parent_key}+'_'+{key}",f"{parent_key+'_'+key}_index",f"{parent_key+'_'+key}_object", "ID"))
                 if v_id is None:
                     raise ValueError("v_id is None, but it should not be.")
                 col_string = f"ALTER TABLE {parent_key+'_'+key} ADD COLUMN IF NOT EXISTS {parent_key+'_'+key}_index INT NULL;"
@@ -268,6 +294,8 @@ def _drop_tables(data, conn):
             key = re.sub("(\*)","_star", key)
         if '@' in key:
             key = re.sub("(@)","_", key)
+        if 'range' in key:
+            key = re.sub("range","range_", key)
         conn.execute(text(f"drop table if exists {key};"))
     conn.execute(text("SET FOREIGN_KEY_CHECKS=1;"))
 
@@ -277,6 +305,8 @@ def _execute_cmds(sql_cmds, conn):
             cmd = re.sub("(\*)","_star", cmd)
         if '@' in cmd:
             cmd = re.sub("(@)","_", cmd)
+        if 'range' in cmd:
+            cmd = re.sub("range","range_", cmd)
         # # To execute the SQL query
         conn.execute(text(cmd))
     
@@ -313,16 +343,77 @@ def json_to_sql(top_table_name, json_data, sqlalachemy_engine, filter_doc=None, 
     data_to_insert = {}
     sql_creation_cmds = []
     for doc in json_data:
-        if filter_doc is not None:
+        if n_doc == 0:
+            name = top_table_name
+        elif filter_doc is not None:
             name, doc = filter_doc(doc)
             if doc is None:
                 continue
             if name is None:
                 name = top_table_name
-        if n_doc == 0:
-            name = top_table_name
+            if np.iterable(name) and not isinstance(name, str):
+                for n in name:
+                    convert_to_sql(n, doc, sql_creation_cmds,data_to_insert)
+                    n_doc += 1
+                continue
         convert_to_sql(name, doc, sql_creation_cmds,data_to_insert)
         n_doc += 1
+    child_table_names = []
+    child_table_cols = []
+    parent_table_names = []
+    parent_table_cols = []
+    indicies_to_remove = []
+    table_name_to_remove = []
+    for i, cmd in enumerate(sql_creation_cmds):
+        if "FOREIGN KEY" in cmd:
+            child_table_names.append(cmd.split("TABLE ")[1].split(" ADD")[0])
+            child_table_cols.append(cmd.split("EXISTS ")[1].split(" REFERENCES")[0].strip("()"))
+            parent_table_names.append(cmd.split("REFERENCES ")[1].split("(")[0])
+            parent_table_cols.append(cmd.split("REFERENCES ")[1].split("(")[1].split(")")[0])
+            len_parent_table_col = len(data_to_insert[parent_table_names[-1]][parent_table_cols[-1]])
+            len_child_table_col = len(data_to_insert[child_table_names[-1]][child_table_cols[-1]])
+            if len_parent_table_col != len_child_table_col:
+                continue
+            indicies_to_remove.append(i)
+            # table_name_to_remove.append(child_table_names[-1])
+    links = list(zip(child_table_names, child_table_cols, parent_table_names, parent_table_cols))
+    links = [i for j, i in enumerate(links) if j not in indicies_to_remove]
+    # for i, cmd in enumerate(sql_creation_cmds):
+    #     if "CREATE TABLE" in cmd:
+    #         if cmd.split("EXISTS ")[1].split(" (")[0] in table_name_to_remove:
+    #             indicies_to_remove.append(i)
+    #     if "ALTER TABLE" in cmd:
+    #         if cmd.split("TABLE ")[1].split(" ADD")[0] in table_name_to_remove:
+    #             indicies_to_remove.append(i)
+    # # remove unneeded foreign key commands
+    # sql_creation_cmds = [i for j, i in enumerate(sql_creation_cmds) if j not in indicies_to_remove]
+    # for child_table_name, child_table_col, parent_table_name, parent_table_col in links:
+    #     len_parent_table_col = len(data_to_insert[parent_table_name][parent_table_col])
+    #     len_child_table_col = len(data_to_insert[child_table_name][child_table_col])
+    #     if len_parent_table_col != len_child_table_col:
+    #         continue
+    #     indices = [i for i, x in enumerate(parent_table_names) if x == child_table_name]
+    #     for i in indices:
+    n_doc = 0
+    data_to_insert = {}
+    sql_creation_cmds = []
+    for doc in json_data:
+        if n_doc == 0:
+            name = top_table_name
+        elif filter_doc is not None:
+            name, doc = filter_doc(doc)
+            if doc is None:
+                continue
+            if name is None:
+                name = top_table_name
+            if np.iterable(name) and not isinstance(name, str):
+                for n in name:
+                    convert_to_sql(n, doc, sql_creation_cmds,data_to_insert, avoid_links=links)
+                    n_doc += 1
+                continue
+        convert_to_sql(name, doc, sql_creation_cmds,data_to_insert, avoid_links=links)
+
+
     print("number_of_json_documents = ", n_doc)
     upload_data_to_sql(sql_creation_cmds, data_to_insert, sqlalachemy_engine, drop_tables=drop_tables)
 
@@ -359,30 +450,30 @@ if __name__ == "__main__":
         print(doc)
         id = str(doc['_id'])
         neem_ids.append(id)
-        tf = db.get_collection(id + '_tf')
-        neem_collection_to_sql("tf",
-                          tf,
-                          all_collections_creation_cmds,
-                          all_collections_data_to_insert,
-                          neem_id=doc['_id'])
-        annotations = db.get_collection(id + '_annotations')
-        neem_collection_to_sql("annotations",
-                          annotations,
-                          all_collections_creation_cmds,
-                          all_collections_data_to_insert,
-                          neem_id=doc['_id'])
+        # tf = db.get_collection(id + '_tf')
+        # neem_collection_to_sql("tf",
+        #                   tf,
+        #                   all_collections_creation_cmds,
+        #                   all_collections_data_to_insert,
+        #                   neem_id=doc['_id'])
+        # annotations = db.get_collection(id + '_annotations')
+        # neem_collection_to_sql("annotations",
+        #                   annotations,
+        #                   all_collections_creation_cmds,
+        #                   all_collections_data_to_insert,
+        #                   neem_id=doc['_id'])
         triples = db.get_collection(id + '_triples')
         neem_collection_to_sql("triples",
                           triples,
                           all_collections_creation_cmds,
                           all_collections_data_to_insert,
                           neem_id=doc['_id'])
-        inferred = db.get_collection(id + '_inferred')
-        neem_collection_to_sql("inferred",
-                          inferred,
-                          all_collections_creation_cmds,
-                          all_collections_data_to_insert,
-                          neem_id=doc['_id'])
+        # inferred = db.get_collection(id + '_inferred')
+        # neem_collection_to_sql("inferred",
+        #                   inferred,
+        #                   all_collections_creation_cmds,
+        #                   all_collections_data_to_insert,
+        #                   neem_id=doc['_id'])
         if n_doc >= 2:
             break
 
