@@ -105,6 +105,8 @@ class SQLCreator():
             # This checks if all the keys (i.e. columns) where defined before, and have values already.
             if key in self.all_obj_keys.keys():
                 for k in obj.keys():
+                    if '#' in k:
+                        k = k.split('#')[1]
                     if k not in self.all_obj_keys[key]:
                         self.not_always_there.append(key+'.'+k)
 
@@ -396,86 +398,24 @@ def neem_collection_to_sql(name, collection, sql_creator=None, neem_id=None):
 def json_to_sql(top_table_name, json_data, sqlalachemy_engine, filter_doc=None, drop_tables=True):
     n_doc = 0
     sql_creator = SQLCreator()
-    for doc in json_data:
-        if n_doc == 0:
-            name = top_table_name
-        elif filter_doc is not None:
-            name, doc = filter_doc(doc)
-            if doc is None:
-                continue
-            if name is None:
+    funcs = [sql_creator.find_relationships, sql_creator.convert_to_sql]
+    for func in funcs:
+        for doc in json_data:
+            if n_doc == 0:
                 name = top_table_name
-            if np.iterable(name) and not isinstance(name, str):
-                for n in name:
-                    sql_creator.convert_to_sql(n, doc)
-                    n_doc += 1
-                continue
-        sql_creator.convert_to_sql(name, doc)
-        n_doc += 1
-    sql_creation_cmds = sql_creator.sql_table_creation_cmds
-    data_to_insert = sql_creator.data_to_insert
-    child_table_names = []
-    child_table_cols = []
-    parent_table_names = []
-    parent_table_cols = []
-    indicies_to_remove = []
-    table_name_to_remove = []
-    links = []
-    for i, cmd in enumerate(sql_creation_cmds):
-        if "FOREIGN KEY" in cmd:
-            child_table_names.append(cmd.split("TABLE ")[1].split(" ADD")[0])
-            child_table_cols.append(cmd.split("EXISTS ")[1].split(" REFERENCES")[0].strip("()"))
-            parent_table_names.append(cmd.split("REFERENCES ")[1].split("(")[0])
-            parent_table_cols.append(cmd.split("REFERENCES ")[1].split("(")[1].split(")")[0])
-            len_parent_table_col = len(data_to_insert[parent_table_names[-1]][parent_table_cols[-1]])
-            len_child_table_col = len(data_to_insert[child_table_names[-1]][child_table_cols[-1]])
-            if len_parent_table_col != len_child_table_col:
-                continue
-            indicies_to_remove.append(i)
-            # table_name_to_remove.append(child_table_names[-1])
-            links.append((child_table_names[-1], child_table_cols[-1], parent_table_names[-1], parent_table_cols[-1]))
-    # links = list(zip(child_table_names, child_table_cols, parent_table_names, parent_table_cols))
-    # links_copy = deepcopy(links)
-    # links = [i for j, i in enumerate(links_copy) if j not in indicies_to_remove]
-    # print(links)
-    # exit()
-    # for i, cmd in enumerate(sql_creation_cmds):
-    #     if "CREATE TABLE" in cmd:
-    #         if cmd.split("EXISTS ")[1].split(" (")[0] in table_name_to_remove:
-    #             indicies_to_remove.append(i)
-    #     if "ALTER TABLE" in cmd:
-    #         if cmd.split("TABLE ")[1].split(" ADD")[0] in table_name_to_remove:
-    #             indicies_to_remove.append(i)
-    # # remove unneeded foreign key commands
-    # sql_creation_cmds = [i for j, i in enumerate(sql_creation_cmds) if j not in indicies_to_remove]
-    # for child_table_name, child_table_col, parent_table_name, parent_table_col in links:
-    #     len_parent_table_col = len(data_to_insert[parent_table_name][parent_table_col])
-    #     len_child_table_col = len(data_to_insert[child_table_name][child_table_col])
-    #     if len_parent_table_col != len_child_table_col:
-    #         continue
-    #     indices = [i for i, x in enumerate(parent_table_names) if x == child_table_name]
-    #     for i in indices:
-    n_doc = 0
-    sql_creator = SQLCreator()
-    for doc in json_data:
-        if n_doc == 0:
-            name = top_table_name
-        elif filter_doc is not None:
-            name, doc = filter_doc(doc)
-            if doc is None:
-                continue
-            if name is None:
-                name = top_table_name
-            if np.iterable(name) and not isinstance(name, str):
-                for n in name:
-                    sql_creator.convert_to_sql(n, doc, avoid_links=links)
-                    n_doc += 1
-                continue
-        sql_creator.convert_to_sql(name, doc, avoid_links=links)
-
-    sql_creation_cmds = sql_creator.sql_table_creation_cmds
-    data_to_insert = sql_creator.data_to_insert
-
+            elif filter_doc is not None:
+                name, doc = filter_doc(doc)
+                if doc is None:
+                    continue
+                if name is None:
+                    name = top_table_name
+                if np.iterable(name) and not isinstance(name, str):
+                    for n in name:
+                        func(n, doc)
+                        n_doc += 1
+                    continue
+            func(name, doc)
+            n_doc += 1
     print("number_of_json_documents = ", n_doc)
     sql_creator.upload_data_to_sql(drop_tables=drop_tables, sqlalchemy_engine=sqlalachemy_engine)
 

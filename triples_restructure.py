@@ -109,7 +109,7 @@ def triples_json_filter_func(doc):
 # Create a sql database from the json file
 triples_data = json.load(open('test.json'))
 name = "restructred_triples"
-json_to_sql(name, triples_data, engine, filter_doc=triples_json_filter_func)
+json_to_sql(name, triples_data, engine, filter_doc=None)
 
 
 tables = {"classes":{'uri': [], 'name': []}}
