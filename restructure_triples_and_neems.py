@@ -92,6 +92,8 @@ class SQLCreator():
         self.data_to_insert = {}
         self.meta_data = {}
         self.all_obj_keys = {}
+        self.one_item_lists = []
+        self.not_one_item_lists = []
         
     def reset_data(self):
         self.sql_table_creation_cmds = []
@@ -100,24 +102,36 @@ class SQLCreator():
     def find_relationships(self, key, obj, parent_key=None, parent_iterable=False, avoid_links=None):
         if '#' in key:
             key = key.split('#')[1]
-        if type(obj) == dict:       
-            # Insertion                        
-            # This checks if all the keys (i.e. columns) where defined before, and have values already.
-            if key in self.all_obj_keys.keys():
-                for k in obj.keys():
+        if type(obj) == dict:
+            
+            if key in self.all_obj_keys.keys():       
+                for k, v in obj.items():
                     if '#' in k:
                         k = k.split('#')[1]
                     if k not in self.all_obj_keys[key]:
                         self.not_always_there.append(key+'.'+k)
-
             else:
                 self.all_obj_keys[key] = {}
-                for k, v in obj.items():
-                    if '#' in k:
-                        k = k.split('#')[1]
-                    if type(v) in [dict, list]:
-                        self.find_relationships(k, v, key, parent_iterable=parent_iterable, avoid_links=avoid_links)
-                    self.all_obj_keys[key][k] = {}
+
+            for k, v in obj.items():
+                if '#' in k:
+                    k = k.split('#')[1]
+                if type(v) == list:
+                    if len(v) == 1:
+                        if key+'.'+k not in self.one_item_lists and key+'.'+k not in self.not_one_item_lists:
+                            self.one_item_lists.append(key+'.'+k)
+                    else:
+                        if key+'.'+k not in self.not_one_item_lists:
+                            self.not_one_item_lists.append(key+'.'+k)
+                        if key+'.'+k in self.one_item_lists:
+                            self.one_item_lists.remove(key+'.'+k)
+
+            for k, v in obj.items():
+                if '#' in k:
+                    k = k.split('#')[1]
+                if type(v) in [dict, list]:
+                    self.find_relationships(k, v, key, parent_iterable=parent_iterable, avoid_links=avoid_links)
+                self.all_obj_keys[key][k] = {}
         elif np.iterable(obj) and type(obj) != str:
             for v in obj:
                 if type(v) not in [dict, list]:
@@ -148,6 +162,25 @@ class SQLCreator():
             # if key == 'scope':
             #     print("scope")
 
+            obj_cp = deepcopy(obj)
+            for k, v in obj_cp.items():
+                orig_k = k
+                if '#' in k:
+                    k = k.split('#')[1]
+                if type(v) != list:
+                    if key+'.'+k in self.not_always_there:
+                        obj[k] = [v]
+                elif len(v) == 1:
+                    if key+'.'+k in self.one_item_lists and key+'.'+k not in self.not_always_there:
+                        if type(v[0]) == dict:
+                            for k2, v2 in v[0].items():
+                                if '#' in k2:
+                                    k2 = k2.split('#')[1]
+                                obj[k+'_'+k2] = v2
+                            del obj[orig_k]
+                        else:
+                            obj[k] = v[0]
+
             # Insertion                        
             # This checks if all the keys (i.e. columns) where defined before, and have values already.
             all_keys_exist = False
@@ -155,10 +188,6 @@ class SQLCreator():
                 # if parent_iterable:
                 if type(self.data_to_insert[key]) == dict:
                     all_keys_exist = all([k in self.data_to_insert[key].keys() for k in obj.keys()])
-                for k, v in obj.items():
-                    if type(v) != list:
-                        if key+'.'+k in self.not_always_there:
-                            obj[k] = [v]
             else:
                 self.data_to_insert[key] = {}
                 self.data_to_insert[key]['ID'] = []
@@ -379,6 +408,7 @@ def neem_collection_to_sql(name, collection, sql_creator=None, neem_id=None):
             for doc in all_docs_list:
                 meta_sql_creator.find_relationships(name, doc)
             sql_creator.not_always_there.extend(meta_sql_creator.not_always_there)
+            sql_creator.one_item_lists.extend(meta_sql_creator.one_item_lists)
             for doc in all_docs_list:
                 sql_creator.convert_to_sql(name, doc)
             done = True
