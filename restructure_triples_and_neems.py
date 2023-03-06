@@ -94,6 +94,7 @@ class SQLCreator():
         self.all_obj_keys = {}
         self.one_item_lists = []
         self.not_one_item_lists = []
+        self.name_type = {}
         
     def reset_data(self):
         self.sql_table_creation_cmds = []
@@ -103,12 +104,15 @@ class SQLCreator():
         if '#' in key:
             key = key.split('#')[1]
         if type(obj) == dict:
-            
+            obj_k = list(map(lambda x: x.split('#')[1] if '#' in x else x, obj.keys()))
             if key in self.all_obj_keys.keys():       
                 for k, v in obj.items():
                     if '#' in k:
                         k = k.split('#')[1]
                     if k not in self.all_obj_keys[key]:
+                        self.not_always_there.append(key+'.'+k)
+                for k, v in self.all_obj_keys[key].items():
+                    if k not in obj_k:
                         self.not_always_there.append(key+'.'+k)
             else:
                 self.all_obj_keys[key] = {}
@@ -136,7 +140,7 @@ class SQLCreator():
             for v in obj:
                 if type(v) not in [dict, list]:
                     v = {'value':v}
-                self.find_relationships(parent_key+'_'+key+'_object', v, parent_key+'_'+key, parent_iterable=True, avoid_links=avoid_links)
+                self.find_relationships(key, v, parent_key+'_'+key, parent_iterable=True, avoid_links=avoid_links)
         else:
             self.all_obj_keys[key] = []
 
@@ -148,16 +152,6 @@ class SQLCreator():
             id_col_string = f"CREATE TABLE IF NOT EXISTS {key} (ID INT NOT NULL AUTO_INCREMENT PRIMARY KEY);"
             if id_col_string not in self.sql_table_creation_cmds:
                 self.sql_table_creation_cmds.append(id_col_string)
-            
-            if avoid_links is not None:
-                obj_cp = deepcopy(obj)
-                for k, v in obj_cp.items():
-                    if '#' in k:
-                        k = k.split('#')[1]
-                    if (f"{key+'_'+k}",f"{key}_ID",f"{key}", "ID") in avoid_links: # means it was a list
-                        obj[k] = v[0]
-                    elif (f"{k}","ID",f"{key}", "ID") in avoid_links: # means it was a dict
-                        obj.update(v)
 
             # if key == 'scope':
             #     print("scope")
@@ -167,19 +161,23 @@ class SQLCreator():
                 orig_k = k
                 if '#' in k:
                     k = k.split('#')[1]
+                if k == 'executesTask':
+                    print("executesTask")
                 if type(v) != list:
                     if key+'.'+k in self.not_always_there:
+                        del obj[orig_k]
                         obj[k] = [v]
-                elif len(v) == 1:
-                    if key+'.'+k in self.one_item_lists and key+'.'+k not in self.not_always_there:
-                        if type(v[0]) == dict:
-                            for k2, v2 in v[0].items():
-                                if '#' in k2:
-                                    k2 = k2.split('#')[1]
-                                obj[k+'_'+k2] = v2
-                            del obj[orig_k]
-                        else:
-                            obj[k] = v[0]
+                elif key+'.'+k in self.one_item_lists and key+'.'+k not in self.not_always_there:
+                        # if type(v[0]) == dict:
+                        #     for k2, v2 in v[0].items():
+                        #         if '#' in k2:
+                        #             k2 = k2.split('#')[1]
+                        #         obj[k+'_'+k2] = v2
+                        #     del obj[orig_k]
+                        # else:
+                        #     obj[k] = v[0]
+                        del obj[orig_k]
+                        obj[k] = v[0]
 
             # Insertion                        
             # This checks if all the keys (i.e. columns) where defined before, and have values already.
@@ -224,13 +222,25 @@ class SQLCreator():
             for k, v in obj.items():
                 if '#' in k:
                     k = k.split('#')[1]
+                if k == 'executesTask':
+                    print("executesTask")
                 v, v_type, v_iterable, v_id = self.convert_to_sql(k, v, parent_key=key, parent_iterable=False)
 
                 if v_iterable:
                     if v_type != dict:
                         col_string = f"ALTER TABLE {key+'_'+k} ADD FOREIGN KEY IF NOT EXISTS ({key}_ID) REFERENCES {key}(ID);"                            
                     else:
-                        col_string = f"ALTER TABLE {k} ADD FOREIGN KEY IF NOT EXISTS (ID) REFERENCES {key}(ID);"
+                        if key+'.'+k in self.one_item_lists and key+'.'+k not in self.not_always_there:
+                            col_string = f"ALTER TABLE {key} ADD COLUMN IF NOT EXISTS {k} INT NULL;"
+                            if col_string not in self.sql_table_creation_cmds:
+                                self.sql_table_creation_cmds.append(col_string)
+                            col_string = f"ALTER TABLE {key} ADD FOREIGN KEY IF NOT EXISTS ({k}) REFERENCES {k}(ID);"
+                            if f'{k}' not in self.data_to_insert[key]:
+                                self.data_to_insert[key][f'{k}'] = [v_id]
+                            else:
+                                self.data_to_insert[key][f'{k}'].append(v_id)
+                        else:
+                            col_string = f"ALTER TABLE {k} ADD FOREIGN KEY IF NOT EXISTS (ID) REFERENCES {key}(ID);"
                 else:
                     # Values are inserted here for non nested columns (i.e. non iterable columns except for str)
                     col_string = insert_column_and_value(self.data_to_insert, key, k, v, v_type)
@@ -252,19 +262,6 @@ class SQLCreator():
             
             # if key == 'scope':
             #     print("scope")
-            
-            normal_v = []
-            if avoid_links is not None:
-                obj_cp = deepcopy(obj)
-                for v in obj_cp:
-                    if (f"{parent_key}+'_'+{key}",f"{parent_key+'_'+key}_index",f"{parent_key+'_'+key}_object", "ID") in avoid_links: # means it was a list
-                        v_iterable = np.iterable(v) and type(v) != str
-                        if v_iterable:
-                            if type(v) == dict:
-                                v = list(v.values())[0]
-                            else:
-                                v = v[0]
-                        normal_v.append(v)
 
             # Insertion
             if parent_key+'_'+key not in self.data_to_insert.keys():
@@ -278,21 +275,21 @@ class SQLCreator():
                 # Insertion
                 self.data_to_insert[parent_key+'_'+key][parent_key+'_ID'].append(parent_id)
                 self.data_to_insert[parent_key+'_'+key]['ID'].append('NULL')
-                if ((not np.iterable(v)) or type(v) == str) and v not in normal_v:
+                if ((not np.iterable(v)) or type(v) == str):
                     v = {'value':v}
                 # if v == {'@list':[]}:
                 #     print("hey")
-                v, v_type, v_iterable, v_id = self.convert_to_sql(parent_key+'_'+key+'_object', v, parent_key=parent_key+'_'+key, parent_iterable=True)
+                v, v_type, v_iterable, v_id = self.convert_to_sql(key, v, parent_key=parent_key+'_'+key, parent_iterable=True)
 
                 # This means we are in the meta file, which we know the structure of.
                 if v_iterable:
-                    # links.append((f"{parent_key}+'_'+{key}",f"{parent_key+'_'+key}_index",f"{parent_key+'_'+key}_object", "ID"))
+                    # links.append((f"{parent_key}+'_'+{key}",f"{parent_key+'_'+key}_index",f"{key}", "ID"))
                     if v_id is None:
                         raise ValueError("v_id is None, but it should not be.")
                     col_string = f"ALTER TABLE {parent_key+'_'+key} ADD COLUMN IF NOT EXISTS {parent_key+'_'+key}_index INT NULL;"
                     if col_string not in self.sql_table_creation_cmds:
                         self.sql_table_creation_cmds.append(col_string)
-                    col_string = f"ALTER TABLE {parent_key+'_'+key} ADD FOREIGN KEY IF NOT EXISTS ({parent_key+'_'+key}_index) REFERENCES {parent_key+'_'+key}_object(ID);"
+                    col_string = f"ALTER TABLE {parent_key+'_'+key} ADD FOREIGN KEY IF NOT EXISTS ({parent_key+'_'+key}_index) REFERENCES {key}(ID);"
 
                     # Insertion
                     if parent_key+'_'+key+'_index' not in self.data_to_insert[parent_key+'_'+key].keys():
@@ -312,6 +309,92 @@ class SQLCreator():
         else:
             obj = mon2py(obj)
         return obj, type(obj), np.iterable(obj) and type(obj) != str, ID
+
+    def link_column_to_exiting_table(self, table_name, col_name, type_name, indicies):
+        self.data_to_insert[table_name][col_name] = indicies
+        col_string = f"ALTER TABLE {table_name} DROP COLUMN IF EXISTS {col_name};"
+        if col_string not in self.sql_table_creation_cmds:
+            self.sql_table_creation_cmds.append(col_string)
+        col_string = f"ALTER TABLE {table_name} ADD COLUMN {col_name} INT NULL;"
+        if col_string not in self.sql_table_creation_cmds:
+            self.sql_table_creation_cmds.append(col_string)
+        col_string = f"ALTER TABLE {table_name} ADD FOREIGN KEY IF NOT EXISTS ({col_name}) REFERENCES {type_name}(ID);"
+        if col_string not in self.sql_table_creation_cmds:
+            self.sql_table_creation_cmds.append(col_string)
+    
+    def add_fk_column(self, parent_table_name, table_name, col_name):
+        col_string = f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS {col_name} INT NULL;"
+        if col_string not in self.sql_table_creation_cmds:
+            self.sql_table_creation_cmds.append(col_string)
+        col_string = f"ALTER TABLE {table_name} ADD FOREIGN KEY IF NOT EXISTS ({col_name}) REFERENCES {parent_table_name}(ID);"
+        if col_string not in self.sql_table_creation_cmds:
+            self.sql_table_creation_cmds.append(col_string)
+    
+    def link_column_to_new_table(self, parent_table_name, type_name, instance_table_indicies, original_table_indicies):
+        # Creation
+        id_col_string = f"CREATE TABLE IF NOT EXISTS {parent_table_name+'_'+type_name} (ID INT AUTO_INCREMENT NOT NULL PRIMARY KEY,"
+        id_col_string += f"{parent_table_name}_ID INT NULL);"
+        if id_col_string not in self.sql_table_creation_cmds:
+            self.sql_table_creation_cmds.append(id_col_string)
+        
+        # Instance Table Reference Column
+        self.add_fk_column(parent_table_name, parent_table_name+'_'+type_name, parent_table_name+'_index')
+
+        # Original Table Reference Column
+        self.add_fk_column(type_name, parent_table_name+'_'+type_name, type_name+'_index')
+
+        # Insertion
+        self.data_to_insert[parent_table_name+'_'+type_name] = {}
+        self.data_to_insert[parent_table_name+'_'+type_name]['ID'] = ['NULL']*len(instance_table_indicies)
+        self.data_to_insert[parent_table_name+'_'+type_name][parent_table_name+'_index'] = instance_table_indicies
+        self.data_to_insert[parent_table_name+'_'+type_name][type_name+'_index'] = original_table_indicies
+
+    
+    def reference_to_existing_table(self):
+        data_to_insert_cp = deepcopy(self.data_to_insert)
+        for table_name, cols in data_to_insert_cp.items():
+            for col_name, col_values in cols.items():
+                if len(col_values) == 0:
+                    continue
+                v = col_values[0]
+                if type(v) != str:
+                    continue
+                if '#' not in v:
+                    continue
+                first_type_name = None
+                named_individual = True
+                multi_type = False
+                self_reference = False
+                all_type_names = {}
+                for c_i, v in enumerate(col_values):
+                    if v not in self.name_type: # Not a Named Individual
+                        named_individual = False
+                        break
+                    type_name = self.name_type[v]
+                    if type_name not in self.data_to_insert: # No table for this type
+                        raise ValueError(f"Table {type_name} does not exist.")
+                    if type_name == table_name: # Self reference
+                        self_reference = True
+                        break
+                    if c_i == 0:
+                        first_type_name = type_name
+                    elif first_type_name != type_name:
+                        multi_type = True
+                    if type_name not in all_type_names.keys():
+                        all_type_names[type_name] = {'instance_table_indicies': [], 'original_table_indicies': []}
+                    all_type_names[type_name]['instance_table_indicies'].append(c_i+1)
+                    id = self.data_to_insert[type_name]['@id'].index(v) + 1
+                    all_type_names[type_name]['original_table_indicies'].append(id)
+
+                if self_reference or not named_individual:
+                    continue                     
+                if not multi_type:
+                    self.link_column_to_exiting_table(table_name, col_name, type_name, all_type_names[type_name]['original_table_indicies'])
+                else:
+                    for type_name, indicies in all_type_names.items():
+                        self.link_column_to_new_table(table_name, type_name,
+                                                       indicies['instance_table_indicies'],
+                                                         indicies['original_table_indicies'])
 
     def get_insert_rows_commands(self, columns_to_insert=None, max_rows_per_cmd=100000):
         sql_insert_commands = []
@@ -429,16 +512,18 @@ def json_to_sql(top_table_name, json_data, sqlalachemy_engine, filter_doc=None, 
     n_doc = 0
     sql_creator = SQLCreator()
     funcs = [sql_creator.find_relationships, sql_creator.convert_to_sql]
-    for func in funcs:
+    for f_i, func in enumerate(funcs):
         for doc in json_data:
             if n_doc == 0:
                 name = top_table_name
             elif filter_doc is not None:
-                name, doc = filter_doc(doc)
+                name, doc, iri = filter_doc(doc)
                 if doc is None:
                     continue
                 if name is None:
                     name = top_table_name
+                elif f_i == 0:
+                    sql_creator.name_type[iri] = name
                 if np.iterable(name) and not isinstance(name, str):
                     for n in name:
                         func(n, doc)
@@ -446,6 +531,7 @@ def json_to_sql(top_table_name, json_data, sqlalachemy_engine, filter_doc=None, 
                     continue
             func(name, doc)
             n_doc += 1
+    sql_creator.reference_to_existing_table()
     print("number_of_json_documents = ", n_doc)
     sql_creator.upload_data_to_sql(drop_tables=drop_tables, sqlalchemy_engine=sqlalachemy_engine)
 

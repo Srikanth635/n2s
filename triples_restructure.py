@@ -87,8 +87,8 @@ engine = create_engine(sql_url)
 
 # Create a json file from the graph
 # g.serialize(format='json-ld', encoding='utf-8', destination="test.json")
-
 def triples_json_filter_func(doc):
+    iri = doc['@id']
     if '@type' in doc.keys():
         name = [dtype.split('#')[1] for dtype in doc['@type']]
         name = [re.sub("(_:)", "", n) for n in name]
@@ -102,9 +102,9 @@ def triples_json_filter_func(doc):
                     if 'NamedIndividual' not in n2\
                           and 'Description' not in n2\
                             and 'List' not in n2:
-                        return n2, doc
+                        return n2, doc, iri
 
-    return None, doc
+    return None, doc, iri
 
 # Create a sql database from the json file
 triples_data = json.load(open('test.json'))
