@@ -161,8 +161,6 @@ class SQLCreator():
                 orig_k = k
                 if '#' in k:
                     k = k.split('#')[1]
-                if k == 'executesTask':
-                    print("executesTask")
                 if type(v) != list:
                     if key+'.'+k in self.not_always_there:
                         del obj[orig_k]
@@ -222,8 +220,7 @@ class SQLCreator():
             for k, v in obj.items():
                 if '#' in k:
                     k = k.split('#')[1]
-                if k == 'executesTask':
-                    print("executesTask")
+
                 v, v_type, v_iterable, v_id = self.convert_to_sql(k, v, parent_key=key, parent_iterable=False)
 
                 if v_iterable:
@@ -332,22 +329,21 @@ class SQLCreator():
     
     def link_column_to_new_table(self, parent_table_name, type_name, instance_table_indicies, original_table_indicies):
         # Creation
-        id_col_string = f"CREATE TABLE IF NOT EXISTS {parent_table_name+'_'+type_name} (ID INT AUTO_INCREMENT NOT NULL PRIMARY KEY,"
-        id_col_string += f"{parent_table_name}_ID INT NULL);"
+        id_col_string = f"CREATE TABLE IF NOT EXISTS {parent_table_name+'_'+type_name} (ID INT AUTO_INCREMENT NOT NULL PRIMARY KEY);"
         if id_col_string not in self.sql_table_creation_cmds:
             self.sql_table_creation_cmds.append(id_col_string)
         
         # Instance Table Reference Column
-        self.add_fk_column(parent_table_name, parent_table_name+'_'+type_name, parent_table_name+'_index')
+        self.add_fk_column(parent_table_name, parent_table_name+'_'+type_name, parent_table_name+'_ID')
 
         # Original Table Reference Column
-        self.add_fk_column(type_name, parent_table_name+'_'+type_name, type_name+'_index')
+        self.add_fk_column(type_name, parent_table_name+'_'+type_name, type_name+'_ID')
 
         # Insertion
         self.data_to_insert[parent_table_name+'_'+type_name] = {}
         self.data_to_insert[parent_table_name+'_'+type_name]['ID'] = ['NULL']*len(instance_table_indicies)
-        self.data_to_insert[parent_table_name+'_'+type_name][parent_table_name+'_index'] = instance_table_indicies
-        self.data_to_insert[parent_table_name+'_'+type_name][type_name+'_index'] = original_table_indicies
+        self.data_to_insert[parent_table_name+'_'+type_name][parent_table_name+'_ID'] = instance_table_indicies
+        self.data_to_insert[parent_table_name+'_'+type_name][type_name+'_ID'] = original_table_indicies
 
     
     def reference_to_existing_table(self):
@@ -369,13 +365,15 @@ class SQLCreator():
                 for c_i, v in enumerate(col_values):
                     if v not in self.name_type: # Not a Named Individual
                         named_individual = False
-                        break
+                        multi_type = True
+                        continue
                     type_name = self.name_type[v]
                     if type_name not in self.data_to_insert: # No table for this type
                         raise ValueError(f"Table {type_name} does not exist.")
                     if type_name == table_name: # Self reference
                         self_reference = True
-                        break
+                        multi_type = True
+                        continue
                     if c_i == 0:
                         first_type_name = type_name
                     elif first_type_name != type_name:
@@ -386,8 +384,8 @@ class SQLCreator():
                     id = self.data_to_insert[type_name]['@id'].index(v) + 1
                     all_type_names[type_name]['original_table_indicies'].append(id)
 
-                if self_reference or not named_individual:
-                    continue                     
+                # if self_reference or not named_individual:
+                #     continue                     
                 if not multi_type:
                     self.link_column_to_exiting_table(table_name, col_name, type_name, all_type_names[type_name]['original_table_indicies'])
                 else:
