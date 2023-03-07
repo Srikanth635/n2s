@@ -15,7 +15,7 @@ from copy import deepcopy
 
 
 # mongo_to_python_conversions
-def mon2py(val):
+def mon2py(val, name=None):
     if type(val) == Decimal128:
         return float(val.to_decimal())
     elif type(val) == ObjectId:
@@ -86,7 +86,7 @@ def insert_column_and_value(data_to_insert, table_name, column_name, v, v_type):
     return col_string
 
 class SQLCreator():
-    def __init__(self) -> None:
+    def __init__(self, value_mapping_func=None) -> None:
         self.not_always_there = []
         self.sql_table_creation_cmds = []
         self.data_to_insert = {}
@@ -95,6 +95,7 @@ class SQLCreator():
         self.one_item_lists = []
         self.not_one_item_lists = []
         self.name_type = {}
+        self.value_mapping_func = value_mapping_func if value_mapping_func is not None else mon2py
         
     def reset_data(self):
         self.sql_table_creation_cmds = []
@@ -144,10 +145,22 @@ class SQLCreator():
         else:
             self.all_obj_keys[key] = []
 
-    def convert_to_sql(self, key, obj, parent_key=None, parent_iterable=False, avoid_links=None):
+    def convert_to_sql(self, key, obj, parent_key=None, key_iri='', parent_key_iri=''):
+        
         ID = None
-        if '#' in key:
-            key = key.split('#')[1]
+        orig_key = key
+        iri = ''
+        if '#' in orig_key:
+            key = orig_key.split('#')[1]
+            iri = orig_key.split('#')[0]+'#'
+        if 'translation' in key or 'quaternion' in key:
+            print("here")
+        iri = key_iri if iri == '' else iri
+        iri = parent_key_iri if iri == '' else iri
+        if parent_key is not None and type(obj) == str and parent_key_iri != '' and '_' not in parent_key:
+            if ' ' in obj or ',' in obj:
+                obj = self.value_mapping_func(obj, name=parent_key_iri+parent_key)
+
         if type(obj) == dict:
             id_col_string = f"CREATE TABLE IF NOT EXISTS {key} (ID INT NOT NULL AUTO_INCREMENT PRIMARY KEY);"
             if id_col_string not in self.sql_table_creation_cmds:
@@ -164,7 +177,7 @@ class SQLCreator():
                 if type(v) != list:
                     if key+'.'+k in self.not_always_there:
                         del obj[orig_k]
-                        obj[k] = [v]
+                        obj[orig_k] = [v]
                 elif key+'.'+k in self.one_item_lists and key+'.'+k not in self.not_always_there:
                         # if type(v[0]) == dict:
                         #     for k2, v2 in v[0].items():
@@ -175,7 +188,7 @@ class SQLCreator():
                         # else:
                         #     obj[k] = v[0]
                         del obj[orig_k]
-                        obj[k] = v[0]
+                        obj[orig_k] = v[0]
 
             # Insertion                        
             # This checks if all the keys (i.e. columns) where defined before, and have values already.
@@ -218,10 +231,13 @@ class SQLCreator():
             # Go through all columns, create them if new, and create foreign keys to nested tables/dicts
             # Finally insert values.
             for k, v in obj.items():
+                orig_k = k
+                k_iri = ''
                 if '#' in k:
-                    k = k.split('#')[1]
+                    k = orig_k.split('#')[1]
+                    k_iri = orig_k.split('#')[0]+'#'
 
-                v, v_type, v_iterable, v_id = self.convert_to_sql(k, v, parent_key=key, parent_iterable=False)
+                v, v_type, v_iterable, v_id = self.convert_to_sql(k, v, parent_key=key, key_iri=k_iri, parent_key_iri=iri)
 
                 if v_iterable:
                     if v_type != dict:
@@ -276,7 +292,7 @@ class SQLCreator():
                     v = {'value':v}
                 # if v == {'@list':[]}:
                 #     print("hey")
-                v, v_type, v_iterable, v_id = self.convert_to_sql(key, v, parent_key=parent_key+'_'+key, parent_iterable=True)
+                v, v_type, v_iterable, v_id = self.convert_to_sql(key, v, parent_key=parent_key+'_'+key, parent_key_iri=iri)
 
                 # This means we are in the meta file, which we know the structure of.
                 if v_iterable:
@@ -304,7 +320,7 @@ class SQLCreator():
                     if col_string not in self.sql_table_creation_cmds:
                         self.sql_table_creation_cmds.append(col_string)
         else:
-            obj = mon2py(obj)
+            obj = self.value_mapping_func(obj, name=parent_key_iri+parent_key)
         return obj, type(obj), np.iterable(obj) and type(obj) != str, ID
 
     def link_column_to_exiting_table(self, table_name, col_name, type_name, indicies):
@@ -506,9 +522,9 @@ def neem_collection_to_sql(name, collection, sql_creator=None, neem_id=None):
     print(n_doc)
     return sql_table_creation_cmds, data_to_insert
 
-def json_to_sql(top_table_name, json_data, sqlalachemy_engine, filter_doc=None, drop_tables=True):
+def json_to_sql(top_table_name, json_data, sqlalachemy_engine, filter_doc=None, drop_tables=True, value_mapping_func=None):
     n_doc = 0
-    sql_creator = SQLCreator()
+    sql_creator = SQLCreator(value_mapping_func=value_mapping_func)
     funcs = [sql_creator.find_relationships, sql_creator.convert_to_sql]
     for f_i, func in enumerate(funcs):
         for doc in json_data:

@@ -8,6 +8,7 @@ import re
 
 
 data_types = {'types': [], 'values': []}
+all_property_types = {}
 
 def xsd_2_mysql_type(property_name, o):
     for _, _, value in g.triples((property_name, RDFS.range, None)):
@@ -35,7 +36,27 @@ def xsd_2_mysql_type(property_name, o):
         elif value == soma.array_double:
             return 'DOUBLE'
         else:
-            return 'VARCHAR(255)'         
+            return 'VARCHAR(2083)'
+
+def ont_2_py(obj, name):
+    o = obj
+    property_name = URIRef(name)
+    for _, _, value in g.triples((property_name, RDFS.range, None)):
+        val = value.n3(g.namespace_manager)
+        if val not in data_types['types']:
+            data_types['types'].append(val)
+            data_types['values'].append(o)
+        if property_name not in all_property_types:
+            all_property_types[property_name] = value
+        if str(XSD) in str(value):
+            o = Literal(o, datatype=value)
+            v = o.value
+        elif value == soma.array_double:
+            v = list(map(float, str(o).strip('[]').split(' ')))
+        else:
+            v = str(o)
+        return v
+    return o
 
 g = Graph(bind_namespaces="rdflib")
 soma = Namespace("http://www.ease-crc.org/ont/SOMA.owl#")
@@ -64,7 +85,6 @@ g.bind("iai-kitchen-knowledge", iai_kitchen_knowledge)
 g.bind("knowrob", knowrob)
 g.bind("iai-kitchen-objects", iai_kitchen_objects)
 g.bind("srdl2-comp", srdl2_comp)
-
 # Create sqlalchemy engine
 sql_url = os.environ['LOCAL_SQL_URL']
 engine = create_engine(sql_url)
@@ -74,16 +94,34 @@ engine = create_engine(sql_url)
 # curr = conn.execute(text("""SELECT s, p, o
 # FROM test.triples
 # ORDER BY _id;"""))
-
+# known_ns = [OWL, RDF, RDFS, XSD, soma, dul, iolite, urdf, srdl2_cap, kitchen, pr2, iai_kitchen_knowledge, knowrob, iai_kitchen_objects, srdl2_comp]
+# known_ns_names = ['owl', 'rdf', 'rdfs', 'xsd', 'soma', 'dul', 'iolite', 'urdf', 'srdl2_cap', 'kitchen', 'pr2', 'iai_kitchen_knowledge', 'knowrob', 'iai_kitchen_objects', 'srdl2_comp']
+# triples_ns = {knsname: str(kns) for knsname, kns in zip(known_ns_names, known_ns)}
 # for v in curr:
 #     # print(type(v[0]))
 #     new_v = [0, 0, 0]
 #     for i in range(3):
+#         if 'http' in v[i] and '#' in v[i]:
+#             ns_name = v[i].split('#')[0].split('/')[-1].split('.owl')[0]
+#             ns_iri = v[i].split('#')[0]+'#'
+#             if ns_iri not in triples_ns.values():
+#                 triples_ns[ns_name] = v[i].split('#')[0]+'#'
 #         new_v[i] = URIRef(v[i]) if '#' in v[i] else Literal(v[i])
 #     g.add((new_v[0], new_v[1], new_v[2]))
 #     # break
 # conn.commit()
 # conn.close()
+# print(json.dumps(triples_ns, indent=4))
+# print(len(triples_ns))
+g.parse("test.json", format="json-ld")
+
+# Get all data types
+for s, p, o in g:
+    col_type = ont_2_py(o, p)
+# print(json.dumps(list(zip(data_types['types'],data_types['values'])),sort_keys=True, indent=4))
+print(json.dumps(all_property_types,sort_keys=True, indent=4))
+print("number of datatybes = ", len(data_types['types']))
+# exit()
 
 # Create a json file from the graph
 # g.serialize(format='json-ld', encoding='utf-8', destination="test.json")
@@ -109,8 +147,15 @@ def triples_json_filter_func(doc):
 # Create a sql database from the json file
 triples_data = json.load(open('test.json'))
 name = "restructred_triples"
-json_to_sql(name, triples_data, engine, filter_doc=triples_json_filter_func)
+json_to_sql(name, triples_data, engine, filter_doc=triples_json_filter_func, value_mapping_func=ont_2_py)
+exit()
 
+# l =Literal('http://knowrob.org/kb/srdl2-comp.owl#PayloadAttribute', datatype=XSD.anyURI)
+# a = str(l)
+# b = l.value
+# print(type(b))
+# v = datetime.strptime(str(l.value), '%Y-%m-%dT%H:%M:%S')
+# vtype = datetime
 
 tables = {"classes":{'uri': [], 'name': []}}
 # get all named individuals in the object position
@@ -137,14 +182,16 @@ for named_individual, _, _ in g.triples((None, RDF.type, OWL.NamedIndividual)):
         col = class_property.n3(g.namespace_manager)
         value = value.split('#')[1] if '#' in value else value
         if col not in tables[class_name].keys():
-            col_type = xsd_2_mysql_type(class_property, value)
+            v = ont_2_py(value, class_property)
+            print(v, type(v))
             tables[class_name][col] = []
         if value not in tables[class_name][col]:
             tables[class_name][col].append(value)
                 
     # print('====================')
+# json.dump(tables, open('tables.json', 'w'), sort_keys=True)
 # print(json.dumps(tables,sort_keys=True, indent=4))
-# print(json.dumps(list(zip(data_types['types'],data_types['values'])),sort_keys=True, indent=4))
-# print("number of datatybes = ", len(data_types['types']))
-# print("number of classes = ", len(tables.keys()))
+print(json.dumps(list(zip(data_types['types'],data_types['values'])),sort_keys=True, indent=4))
+print("number of datatybes = ", len(data_types['types']))
+print("number of classes = ", len(tables.keys()))
 # print(json.dumps(tables["IAIOven"],sort_keys=True, indent=4))
