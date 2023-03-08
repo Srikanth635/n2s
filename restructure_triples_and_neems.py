@@ -143,7 +143,7 @@ class SQLCreator():
         else:
             self.all_obj_keys[key] = []
 
-    def convert_to_sql(self, key, obj, parent_key=None, key_iri='', parent_key_iri=''):
+    def convert_to_sql(self, key, obj, parent_key=None, key_iri='', parent_key_iri='', parent_table_name=''):
         
         # This is the ID of the object/row in the sql table.
         ID = None
@@ -164,9 +164,12 @@ class SQLCreator():
                 obj = self.value_mapping_func(obj, name=parent_key_iri+parent_key)
 
         if type(obj) == dict:
-            id_col_string = f"CREATE TABLE IF NOT EXISTS {key} (ID INT NOT NULL AUTO_INCREMENT PRIMARY KEY);"
+            table_name = key if parent_key is None else parent_key+'_'+key
+            id_col_string = f"CREATE TABLE IF NOT EXISTS {table_name} (ID INT NOT NULL AUTO_INCREMENT PRIMARY KEY);"
             self.sql_table_creation_cmds.add(id_col_string)
 
+            # Make object keys that are not always there into lists (thus making them many to many relationships)
+            # Also, map one item lists into just the item.
             obj_cp = deepcopy(obj)
             for k, v in obj_cp.items():
                 orig_k = k
@@ -190,13 +193,13 @@ class SQLCreator():
             # Insertion                        
             # This checks if all the keys (i.e. columns) where defined before, and have values already.
             all_keys_exist = False
-            if key in self.data_to_insert.keys():
+            if table_name in self.data_to_insert.keys():
                 # if parent_iterable:
-                if type(self.data_to_insert[key]) == dict:
-                    all_keys_exist = all([k in self.data_to_insert[key].keys() for k in obj.keys()])
+                if type(self.data_to_insert[table_name]) == dict:
+                    all_keys_exist = all([k in self.data_to_insert[table_name].keys() for k in obj.keys()])
             else:
-                self.data_to_insert[key] = {}
-                self.data_to_insert[key]['ID'] = []
+                self.data_to_insert[table_name] = {}
+                self.data_to_insert[table_name]['ID'] = []
                 ID = 1
 
             # Now that the keys exist, this would check if the values also exist, if it does then skip it, and use old one ID.
@@ -206,7 +209,7 @@ class SQLCreator():
             # For example: self.data_to_insert['neems']['ID'] = [id1, id2, id3], where 'neems' is the table name
             # 'ID' is the column_name, and 'id1' to 'id3' are 3 values for 3 different rows in the 'ID' column.
             if all_keys_exist:
-                rows = zip(*tuple([self.data_to_insert[key][k] for k in obj.keys()]))
+                rows = zip(*tuple([self.data_to_insert[table_name][k] for k in obj.keys()]))
                 rows_list = list(rows)
                 row = tuple(filter(mon2py,obj.values()))
                 if np.iterable(row):
@@ -218,12 +221,10 @@ class SQLCreator():
                 else:
                     ID = len(rows_list) + 1
             elif ID is None:
-                ID = len(self.data_to_insert[key]['ID']) + 1
+                ID = len(self.data_to_insert[table_name]['ID']) + 1
 
             # Add new ID for the new entry.
-            self.data_to_insert[key]['ID'].append('NULL')
-
-
+            self.data_to_insert[table_name]['ID'].append('NULL')
 
             # Go through all columns, create them if new, and create foreign keys to nested tables/dicts
             # Finally insert values.
@@ -234,27 +235,26 @@ class SQLCreator():
                     k = orig_k.split('#')[1]
                     k_iri = orig_k.split('#')[0]+'#'
 
-                v, v_type, v_iterable, v_id = self.convert_to_sql(k, v, parent_key=key, key_iri=k_iri, parent_key_iri=iri)
+                v, v_type, v_iterable, v_id = self.convert_to_sql(k, v, parent_key=key, key_iri=k_iri, parent_key_iri=iri, parent_table_name=table_name)
 
                 if v_iterable:
-                    if v_type != dict:
-                        self.add_fk_column(parent_table_name=key, table_name=key+'_'+k, col_name=key+'_ID')
-                    else:
+                    k_table_name = key+'_'+k
+                    if v_type == dict:
                         if key+'.'+k in self.one_item_lists and key+'.'+k not in self.not_always_there:
-                            self.add_fk_column(parent_table_name=k, table_name=key, col_name=k)
-                            if f'{k}' not in self.data_to_insert[key]:
-                                self.data_to_insert[key][f'{k}'] = [v_id]
+                            self.add_fk_column(parent_table_name=k_table_name, table_name=table_name, col_name=k)
+                            if f'{k}' not in self.data_to_insert[table_name]:
+                                self.data_to_insert[table_name][f'{k}'] = [v_id]
                             else:
-                                self.data_to_insert[key][f'{k}'].append(v_id)
+                                self.data_to_insert[table_name][f'{k}'].append(v_id)
                         else:
-                            self.add_fk(parent_table_name=key, table_name=k)
+                            self.add_fk(parent_table_name=table_name, table_name=k_table_name)
                 else:
                     # Values are inserted here for non nested columns (i.e. non iterable columns except for str)
-                    self.insert_column_and_value(key, k, v, v_type)
+                    self.insert_column_and_value(table_name, k, v, v_type)
 
-            for k, v in self.data_to_insert[key].items():
+            for k, v in self.data_to_insert[table_name].items():
                 if k not in obj.keys() and k != "ID":
-                    self.data_to_insert[key][k].append('NULL')
+                    self.data_to_insert[table_name][k].append('NULL')
 
         elif np.iterable(obj) and type(obj) != str:
             # Creation
@@ -264,6 +264,8 @@ class SQLCreator():
                 parent_key = "parent"
             id_col_string += f"{parent_key}_ID INT NULL);"
             self.sql_table_creation_cmds.add(id_col_string)
+
+            self.add_fk(parent_table_name=parent_table_name, table_name=table_name, col_name=parent_key+'_ID')
             
             # element position index column
             self.add_col(table_name, 'list_index', 'INT', 'NULL')
@@ -284,8 +286,8 @@ class SQLCreator():
                 self.data_to_insert[table_name]['list_index'].append(i)
                 if ((not np.iterable(v)) or type(v) == str):
                     v = {'value':v}
-
-                v, v_type, v_iterable, v_id = self.convert_to_sql(key, v, parent_key=table_name, parent_key_iri=iri)
+                k_table_name = parent_key+'_'+key+'_value'
+                v, v_type, v_iterable, v_id = self.convert_to_sql(key+'_value', v, parent_key=parent_key, parent_key_iri=iri, parent_table_name=table_name)
 
                 # This means we are in the meta file, which we know the structure of.
                 if v_iterable:
@@ -293,8 +295,8 @@ class SQLCreator():
                         raise ValueError("v_id is None, but it should not be.")
                     
                     # Instance Table Reference Column
-                    col_name = f"{table_name}_ID"
-                    self.add_fk_column(parent_table_name=key, table_name=table_name, col_name=col_name)
+                    col_name = f"{k_table_name}_ID"
+                    self.add_fk_column(parent_table_name=k_table_name, table_name=table_name, col_name=col_name)
 
                     # Insertion
                     if col_name not in self.data_to_insert[table_name].keys():
@@ -364,20 +366,16 @@ class SQLCreator():
                 if '#' not in v:
                     continue
                 first_type_name = None
-                named_individual = True
                 multi_type = False
-                self_reference = False
                 all_type_names = {}
                 for c_i, v in enumerate(col_values):
                     if v not in self.name_type: # Not a Named Individual
-                        named_individual = False
                         multi_type = True
                         continue
                     type_name = self.name_type[v]
                     if type_name not in self.data_to_insert: # No table for this type
                         raise ValueError(f"Table {type_name} does not exist.")
                     if type_name == table_name: # Self reference
-                        self_reference = True
                         multi_type = True
                         continue
                     if c_i == 0:
@@ -569,26 +567,26 @@ if __name__ == "__main__":
         print(doc)
         id = str(doc['_id'])
         neem_ids.append(id)
-        # tf = db.get_collection(id + '_tf')
-        # neem_collection_to_sql("tf",
-        #                        tf,
-        #                        sql_creator=sql_creator,
-        #                        neem_id=doc['_id'])
-        # annotations = db.get_collection(id + '_annotations')
-        # neem_collection_to_sql("annotations",
-        #                   annotations,
-        #                   sql_creator=sql_creator,
-        #                   neem_id=doc['_id'])
+        tf = db.get_collection(id + '_tf')
+        neem_collection_to_sql("tf",
+                               tf,
+                               sql_creator=sql_creator,
+                               neem_id=doc['_id'])
+        annotations = db.get_collection(id + '_annotations')
+        neem_collection_to_sql("annotations",
+                          annotations,
+                          sql_creator=sql_creator,
+                          neem_id=doc['_id'])
         triples = db.get_collection(id + '_triples')
         neem_collection_to_sql("triples",
                           triples,
                           sql_creator=sql_creator,
                           neem_id=doc['_id'])
-        # inferred = db.get_collection(id + '_inferred')
-        # neem_collection_to_sql("inferred",
-        #                   inferred,
-        #                   sql_creator=sql_creator,
-        #                   neem_id=doc['_id'])
+        inferred = db.get_collection(id + '_inferred')
+        neem_collection_to_sql("inferred",
+                          inferred,
+                          sql_creator=sql_creator,
+                          neem_id=doc['_id'])
         if n_doc >= 1:
             break
 
