@@ -145,16 +145,20 @@ class SQLCreator():
 
     def convert_to_sql(self, key, obj, parent_key=None, key_iri='', parent_key_iri=''):
         
+        # This is the ID of the object/row in the sql table.
         ID = None
+
+        # This is to preserve the iri of ontology defined terms.
         orig_key = key
         iri = ''
         if '#' in orig_key:
             key = orig_key.split('#')[1]
             iri = orig_key.split('#')[0]+'#'
-        if 'translation' in key or 'quaternion' in key:
-            print("here")
         iri = key_iri if iri == '' else iri
         iri = parent_key_iri if iri == '' else iri
+        
+        # This is for making sure that this string object is not actually and ontology defined array.
+        # if it is an ontology defined array, then a mapping is performed on the string to convert it to a list.
         if parent_key is not None and type(obj) == str and parent_key_iri != '' and '_' not in parent_key:
             if ' ' in obj or ',' in obj:
                 obj = self.value_mapping_func(obj, name=parent_key_iri+parent_key)
@@ -162,9 +166,6 @@ class SQLCreator():
         if type(obj) == dict:
             id_col_string = f"CREATE TABLE IF NOT EXISTS {key} (ID INT NOT NULL AUTO_INCREMENT PRIMARY KEY);"
             self.sql_table_creation_cmds.add(id_col_string)
-
-            # if key == 'scope':
-            #     print("scope")
 
             obj_cp = deepcopy(obj)
             for k, v in obj_cp.items():
@@ -176,16 +177,15 @@ class SQLCreator():
                         del obj[orig_k]
                         obj[orig_k] = [v]
                 elif key+'.'+k in self.one_item_lists and key+'.'+k not in self.not_always_there:
-                        # if type(v[0]) == dict:
-                        #     for k2, v2 in v[0].items():
-                        #         if '#' in k2:
-                        #             k2 = k2.split('#')[1]
-                        #         obj[k+'_'+k2] = v2
-                        #     del obj[orig_k]
-                        # else:
-                        #     obj[k] = v[0]
-                        del obj[orig_k]
-                        obj[orig_k] = v[0]
+                        if type(v[0]) == dict:
+                            del obj[orig_k]
+                            for k2, v2 in v[0].items():
+                                if k2 == '@value':
+                                    obj[orig_k] = v2
+                                else:
+                                    obj[orig_k+'_'+k2] = v2
+                        else:
+                            obj[orig_k] = v[0]
 
             # Insertion                        
             # This checks if all the keys (i.e. columns) where defined before, and have values already.
@@ -237,7 +237,6 @@ class SQLCreator():
                 v, v_type, v_iterable, v_id = self.convert_to_sql(k, v, parent_key=key, key_iri=k_iri, parent_key_iri=iri)
 
                 if v_iterable:
-                    cmds = []
                     if v_type != dict:
                         self.add_fk_column(parent_table_name=key, table_name=key+'_'+k, col_name=key+'_ID')
                     else:
@@ -266,12 +265,15 @@ class SQLCreator():
             id_col_string += f"{parent_key}_ID INT NULL);"
             self.sql_table_creation_cmds.add(id_col_string)
             
+            # element position index column
+            self.add_col(table_name, 'list_index', 'INT', 'NULL')
 
             # Insertion
             if table_name not in self.data_to_insert.keys():
                 self.data_to_insert[table_name] = {}
                 self.data_to_insert[table_name]['ID'] = []
                 self.data_to_insert[table_name][parent_key+'_ID'] = []
+                self.data_to_insert[table_name]['list_index'] = []
             parent_id = len(self.data_to_insert[parent_key]['ID'])
             i = 1
 
@@ -279,6 +281,7 @@ class SQLCreator():
                 # Insertion
                 self.data_to_insert[table_name][parent_key+'_ID'].append(parent_id)
                 self.data_to_insert[table_name]['ID'].append('NULL')
+                self.data_to_insert[table_name]['list_index'].append(i)
                 if ((not np.iterable(v)) or type(v) == str):
                     v = {'value':v}
 
@@ -286,7 +289,6 @@ class SQLCreator():
 
                 # This means we are in the meta file, which we know the structure of.
                 if v_iterable:
-                    # links.append((f"{parent_key}+'_'+{key}",f"{table_name}_ID",f"{key}", "ID"))
                     if v_id is None:
                         raise ValueError("v_id is None, but it should not be.")
                     
@@ -302,7 +304,6 @@ class SQLCreator():
 
                 else:
                     # Insertion
-                    # self.data_to_insert[key][key+'_ID'].append(parent_id)
                     self.insert_column_and_value(table_name, f'{parent_key}_{key}_values', v, v_type)
 
                 i += 1
@@ -313,7 +314,7 @@ class SQLCreator():
     def link_column_to_exiting_table(self, table_name, col_name, type_name, indicies):
         self.data_to_insert[table_name][col_name] = indicies
         self.sql_table_creation_cmds.add(f"ALTER TABLE {table_name} DROP COLUMN IF EXISTS {col_name};")
-        self.sql_table_creation_cmds.update(self.add_fk_column(parent_table_name=type_name, table_name=table_name, col_name=col_name))
+        self.add_fk_column(parent_table_name=type_name, table_name=table_name, col_name=col_name)
     
     def add_fk_column(self, parent_table_name, table_name, col_name, parent_col_name='ID'):
         self.add_col(table_name, col_name, 'INT')
@@ -339,10 +340,10 @@ class SQLCreator():
         self.sql_table_creation_cmds.add(table_string)
         
         # Instance Table Reference Column
-        self.sql_table_creation_cmds.update(self.add_fk_column(parent_table_name, parent_table_name+'_'+type_name, parent_table_name+'_ID'))
+        self.add_fk_column(parent_table_name, parent_table_name+'_'+type_name, parent_table_name+'_ID')
 
         # Original Table Reference Column
-        self.sql_table_creation_cmds.update(self.add_fk_column(type_name, parent_table_name+'_'+type_name, type_name+'_ID'))
+        self.add_fk_column(type_name, parent_table_name+'_'+type_name, type_name+'_ID')
 
         # Insertion
         self.data_to_insert[parent_table_name+'_'+type_name] = {}
