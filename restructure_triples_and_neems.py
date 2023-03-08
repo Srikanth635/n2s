@@ -12,6 +12,7 @@ import sqlalchemy.pool as pool
 from sqlalchemy import create_engine
 from sqlalchemy import text
 from copy import deepcopy
+from orderedset import OrderedSet
 
 
 # mongo_to_python_conversions
@@ -59,36 +60,10 @@ def print_all_collection_types(collection):
             print(obj)
     find_datatype(single_doc)
 
-def insert_column_and_value(data_to_insert, table_name, column_name, v, v_type):
-    key = table_name
-    col_string = f"ALTER TABLE {key} ADD COLUMN IF NOT EXISTS {column_name}"
-    id = True if column_name in ['_id', 'neem_id'] else False
-    data_type = py2sql(v_type, id=id)
-    if data_type is not None:
-        col_string += f" {data_type}"
-        if id:
-            col_string += " NOT NULL"
-            if column_name == '_id':
-                col_string += " UNIQUE"
-        col_string += ";"
-    else:
-        col_string = ""
-    
-    # Insertion
-    v = 'NULL' if v is None else v
-    v = -1 if v == float('inf') else v
-    if column_name not in data_to_insert[key].keys():
-        # The NULL values here are for previous rows that did not have a value for this column
-        n_rows = len(data_to_insert[key]['ID']) - 1
-        data_to_insert[key][column_name] = ['NULL']*n_rows + [v]
-    else:
-        data_to_insert[key][column_name].append(v)
-    return col_string
-
 class SQLCreator():
     def __init__(self, value_mapping_func=None) -> None:
         self.not_always_there = []
-        self.sql_table_creation_cmds = []
+        self.sql_table_creation_cmds = OrderedSet()
         self.data_to_insert = {}
         self.meta_data = {}
         self.all_obj_keys = {}
@@ -98,10 +73,32 @@ class SQLCreator():
         self.value_mapping_func = value_mapping_func if value_mapping_func is not None else mon2py
         
     def reset_data(self):
-        self.sql_table_creation_cmds = []
+        self.sql_table_creation_cmds = OrderedSet()
         self.data_to_insert = {}
     
-    def find_relationships(self, key, obj, parent_key=None, parent_iterable=False, avoid_links=None):
+    def insert_column_and_value(self, table_name, column_name, v, v_type):
+        key = table_name
+        id = True if column_name in ['_id', 'neem_id'] else False
+        data_type = py2sql(v_type, id=id)
+        if data_type is not None:
+            null, unique = True, False
+            if id:
+                null = False
+                if column_name == '_id':
+                    unique = True
+            self.add_col(key, column_name, data_type, NULL=null, UNIQUE=unique)
+        
+        # Insertion
+        v = 'NULL' if v is None else v
+        v = -1 if v == float('inf') else v
+        if column_name not in self.data_to_insert[key].keys():
+            # The NULL values here are for previous rows that did not have a value for this column
+            n_rows = len(self.data_to_insert[key]['ID']) - 1
+            self.data_to_insert[key][column_name] = ['NULL']*n_rows + [v]
+        else:
+            self.data_to_insert[key][column_name].append(v)
+    
+    def find_relationships(self, key, obj, parent_key=None):
         if '#' in key:
             key = key.split('#')[1]
         if type(obj) == dict:
@@ -135,13 +132,14 @@ class SQLCreator():
                 if '#' in k:
                     k = k.split('#')[1]
                 if type(v) in [dict, list]:
-                    self.find_relationships(k, v, key, parent_iterable=parent_iterable, avoid_links=avoid_links)
+                    self.find_relationships(k, v, key)
                 self.all_obj_keys[key][k] = {}
         elif np.iterable(obj) and type(obj) != str:
+            table_name = parent_key+'_'+key
             for v in obj:
                 if type(v) not in [dict, list]:
                     v = {'value':v}
-                self.find_relationships(key, v, parent_key+'_'+key, parent_iterable=True, avoid_links=avoid_links)
+                self.find_relationships(key, v, table_name)
         else:
             self.all_obj_keys[key] = []
 
@@ -163,8 +161,7 @@ class SQLCreator():
 
         if type(obj) == dict:
             id_col_string = f"CREATE TABLE IF NOT EXISTS {key} (ID INT NOT NULL AUTO_INCREMENT PRIMARY KEY);"
-            if id_col_string not in self.sql_table_creation_cmds:
-                self.sql_table_creation_cmds.append(id_col_string)
+            self.sql_table_creation_cmds.add(id_col_string)
 
             # if key == 'scope':
             #     print("scope")
@@ -240,120 +237,112 @@ class SQLCreator():
                 v, v_type, v_iterable, v_id = self.convert_to_sql(k, v, parent_key=key, key_iri=k_iri, parent_key_iri=iri)
 
                 if v_iterable:
+                    cmds = []
                     if v_type != dict:
-                        col_string = f"ALTER TABLE {key+'_'+k} ADD FOREIGN KEY IF NOT EXISTS ({key}_ID) REFERENCES {key}(ID);"                            
+                        self.add_fk_column(parent_table_name=key, table_name=key+'_'+k, col_name=key+'_ID')
                     else:
                         if key+'.'+k in self.one_item_lists and key+'.'+k not in self.not_always_there:
-                            col_string = f"ALTER TABLE {key} ADD COLUMN IF NOT EXISTS {k} INT NULL;"
-                            if col_string not in self.sql_table_creation_cmds:
-                                self.sql_table_creation_cmds.append(col_string)
-                            col_string = f"ALTER TABLE {key} ADD FOREIGN KEY IF NOT EXISTS ({k}) REFERENCES {k}(ID);"
+                            self.add_fk_column(parent_table_name=k, table_name=key, col_name=k)
                             if f'{k}' not in self.data_to_insert[key]:
                                 self.data_to_insert[key][f'{k}'] = [v_id]
                             else:
                                 self.data_to_insert[key][f'{k}'].append(v_id)
                         else:
-                            col_string = f"ALTER TABLE {k} ADD FOREIGN KEY IF NOT EXISTS (ID) REFERENCES {key}(ID);"
+                            self.add_fk(parent_table_name=key, table_name=k)
                 else:
                     # Values are inserted here for non nested columns (i.e. non iterable columns except for str)
-                    col_string = insert_column_and_value(self.data_to_insert, key, k, v, v_type)
+                    self.insert_column_and_value(key, k, v, v_type)
 
-                if len(col_string) > 0:
-                    if col_string not in self.sql_table_creation_cmds:
-                        self.sql_table_creation_cmds.append(col_string)
             for k, v in self.data_to_insert[key].items():
                 if k not in obj.keys() and k != "ID":
                     self.data_to_insert[key][k].append('NULL')
+
         elif np.iterable(obj) and type(obj) != str:
             # Creation
-            id_col_string = f"CREATE TABLE IF NOT EXISTS {parent_key+'_'+key} (ID INT AUTO_INCREMENT NOT NULL PRIMARY KEY,"
+            table_name = parent_key+'_'+key
+            id_col_string = f"CREATE TABLE IF NOT EXISTS {table_name} (ID INT AUTO_INCREMENT NOT NULL PRIMARY KEY,"
             if parent_key is None:
                 parent_key = "parent"
             id_col_string += f"{parent_key}_ID INT NULL);"
-            if id_col_string not in self.sql_table_creation_cmds:
-                self.sql_table_creation_cmds.append(id_col_string)
+            self.sql_table_creation_cmds.add(id_col_string)
             
-            # if key == 'scope':
-            #     print("scope")
 
             # Insertion
-            if parent_key+'_'+key not in self.data_to_insert.keys():
-                self.data_to_insert[parent_key+'_'+key] = {}
-                self.data_to_insert[parent_key+'_'+key]['ID'] = []
-                self.data_to_insert[parent_key+'_'+key][parent_key+'_ID'] = []
+            if table_name not in self.data_to_insert.keys():
+                self.data_to_insert[table_name] = {}
+                self.data_to_insert[table_name]['ID'] = []
+                self.data_to_insert[table_name][parent_key+'_ID'] = []
             parent_id = len(self.data_to_insert[parent_key]['ID'])
             i = 1
 
             for v in obj:
                 # Insertion
-                self.data_to_insert[parent_key+'_'+key][parent_key+'_ID'].append(parent_id)
-                self.data_to_insert[parent_key+'_'+key]['ID'].append('NULL')
+                self.data_to_insert[table_name][parent_key+'_ID'].append(parent_id)
+                self.data_to_insert[table_name]['ID'].append('NULL')
                 if ((not np.iterable(v)) or type(v) == str):
                     v = {'value':v}
-                # if v == {'@list':[]}:
-                #     print("hey")
-                v, v_type, v_iterable, v_id = self.convert_to_sql(key, v, parent_key=parent_key+'_'+key, parent_key_iri=iri)
+
+                v, v_type, v_iterable, v_id = self.convert_to_sql(key, v, parent_key=table_name, parent_key_iri=iri)
 
                 # This means we are in the meta file, which we know the structure of.
                 if v_iterable:
-                    # links.append((f"{parent_key}+'_'+{key}",f"{parent_key+'_'+key}_index",f"{key}", "ID"))
+                    # links.append((f"{parent_key}+'_'+{key}",f"{table_name}_ID",f"{key}", "ID"))
                     if v_id is None:
                         raise ValueError("v_id is None, but it should not be.")
-                    col_string = f"ALTER TABLE {parent_key+'_'+key} ADD COLUMN IF NOT EXISTS {parent_key+'_'+key}_index INT NULL;"
-                    if col_string not in self.sql_table_creation_cmds:
-                        self.sql_table_creation_cmds.append(col_string)
-                    col_string = f"ALTER TABLE {parent_key+'_'+key} ADD FOREIGN KEY IF NOT EXISTS ({parent_key+'_'+key}_index) REFERENCES {key}(ID);"
+                    
+                    # Instance Table Reference Column
+                    col_name = f"{table_name}_ID"
+                    self.add_fk_column(parent_table_name=key, table_name=table_name, col_name=col_name)
 
                     # Insertion
-                    if parent_key+'_'+key+'_index' not in self.data_to_insert[parent_key+'_'+key].keys():
-                        self.data_to_insert[parent_key+'_'+key][parent_key+'_'+key+'_index'] = [v_id]
+                    if col_name not in self.data_to_insert[table_name].keys():
+                        self.data_to_insert[table_name][col_name] = [v_id]
                     else:
-                        self.data_to_insert[parent_key+'_'+key][parent_key+'_'+key+'_index'].append(v_id)
+                        self.data_to_insert[table_name][col_name].append(v_id)
 
                 else:
                     # Insertion
-                    # self.data_to_insert[key][key+'_index'].append(parent_id)
-                    col_string = insert_column_and_value(self.data_to_insert, parent_key+'_'+key, f'{parent_key}_{key}_values', v, v_type)
+                    # self.data_to_insert[key][key+'_ID'].append(parent_id)
+                    self.insert_column_and_value(table_name, f'{parent_key}_{key}_values', v, v_type)
 
                 i += 1
-                if len(col_string) > 0:
-                    if col_string not in self.sql_table_creation_cmds:
-                        self.sql_table_creation_cmds.append(col_string)
         else:
             obj = self.value_mapping_func(obj, name=parent_key_iri+parent_key)
         return obj, type(obj), np.iterable(obj) and type(obj) != str, ID
 
     def link_column_to_exiting_table(self, table_name, col_name, type_name, indicies):
         self.data_to_insert[table_name][col_name] = indicies
-        col_string = f"ALTER TABLE {table_name} DROP COLUMN IF EXISTS {col_name};"
-        if col_string not in self.sql_table_creation_cmds:
-            self.sql_table_creation_cmds.append(col_string)
-        col_string = f"ALTER TABLE {table_name} ADD COLUMN {col_name} INT NULL;"
-        if col_string not in self.sql_table_creation_cmds:
-            self.sql_table_creation_cmds.append(col_string)
-        col_string = f"ALTER TABLE {table_name} ADD FOREIGN KEY IF NOT EXISTS ({col_name}) REFERENCES {type_name}(ID);"
-        if col_string not in self.sql_table_creation_cmds:
-            self.sql_table_creation_cmds.append(col_string)
+        self.sql_table_creation_cmds.add(f"ALTER TABLE {table_name} DROP COLUMN IF EXISTS {col_name};")
+        self.sql_table_creation_cmds.update(self.add_fk_column(parent_table_name=type_name, table_name=table_name, col_name=col_name))
     
-    def add_fk_column(self, parent_table_name, table_name, col_name):
-        col_string = f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS {col_name} INT NULL;"
-        if col_string not in self.sql_table_creation_cmds:
-            self.sql_table_creation_cmds.append(col_string)
-        col_string = f"ALTER TABLE {table_name} ADD FOREIGN KEY IF NOT EXISTS ({col_name}) REFERENCES {parent_table_name}(ID);"
-        if col_string not in self.sql_table_creation_cmds:
-            self.sql_table_creation_cmds.append(col_string)
+    def add_fk_column(self, parent_table_name, table_name, col_name, parent_col_name='ID'):
+        self.add_col(table_name, col_name, 'INT')
+        self.add_fk(parent_table_name, table_name, col_name, parent_col_name)
+    
+    def add_fk(self, parent_table_name, table_name, col_name='ID', parent_col_name='ID'):
+        col_string = f"ALTER TABLE {table_name} ADD FOREIGN KEY IF NOT EXISTS ({col_name}) REFERENCES {parent_table_name}({parent_col_name});"
+        self.sql_table_creation_cmds.add(col_string)
+    
+    def add_col(self, table_name, col_name, col_type, NULL=True, KEY='', UNIQUE=False, DEFAULT=None, AUTO_INCREMENT=False):
+        NULL = 'NOT NULL' if not NULL else 'NULL'
+        UNIQUE = 'UNIQUE' if UNIQUE else ''
+        AUTO_INCREMENT = 'AUTO_INCREMENT' if AUTO_INCREMENT else ''
+        col_string = f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS {col_name} {col_type} {NULL} {KEY} {AUTO_INCREMENT} {UNIQUE}"
+        if DEFAULT is not None:
+            col_string += f" DEFAULT {DEFAULT}"
+        col_string += ';'
+        self.sql_table_creation_cmds.add(col_string)
     
     def link_column_to_new_table(self, parent_table_name, type_name, instance_table_indicies, original_table_indicies):
         # Creation
-        id_col_string = f"CREATE TABLE IF NOT EXISTS {parent_table_name+'_'+type_name} (ID INT AUTO_INCREMENT NOT NULL PRIMARY KEY);"
-        if id_col_string not in self.sql_table_creation_cmds:
-            self.sql_table_creation_cmds.append(id_col_string)
+        table_string = f"CREATE TABLE IF NOT EXISTS {parent_table_name+'_'+type_name} (ID INT AUTO_INCREMENT NOT NULL PRIMARY KEY);"
+        self.sql_table_creation_cmds.add(table_string)
         
         # Instance Table Reference Column
-        self.add_fk_column(parent_table_name, parent_table_name+'_'+type_name, parent_table_name+'_ID')
+        self.sql_table_creation_cmds.update(self.add_fk_column(parent_table_name, parent_table_name+'_'+type_name, parent_table_name+'_ID'))
 
         # Original Table Reference Column
-        self.add_fk_column(type_name, parent_table_name+'_'+type_name, type_name+'_ID')
+        self.sql_table_creation_cmds.update(self.add_fk_column(type_name, parent_table_name+'_'+type_name, type_name+'_ID'))
 
         # Insertion
         self.data_to_insert[parent_table_name+'_'+type_name] = {}
@@ -513,12 +502,10 @@ def neem_collection_to_sql(name, collection, sql_creator=None, neem_id=None):
             doc = None
             print(f"BSON Error at doc with ID {last_doc_id} for {name} with neem_id {neem_id}")
             all_docs = db.get_collection(str(neem_id) + "_" + name).find({"_id":{"$gt":last_doc_id}}, cursor_type=CursorType.EXHAUST)
+    if neem_id is not None:
+        sql_creator.add_fk("neems", name, "neem_id", parent_col_name="_id")
     sql_table_creation_cmds = sql_creator.sql_table_creation_cmds
     data_to_insert = sql_creator.data_to_insert
-    if neem_id is not None:
-        col_string = f"ALTER TABLE {name} ADD FOREIGN KEY IF NOT EXISTS (neem_id) REFERENCES neems(_id);"
-        if col_string not in sql_table_creation_cmds:
-            sql_table_creation_cmds.append(col_string)
     print(n_doc)
     return sql_table_creation_cmds, data_to_insert
 
