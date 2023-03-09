@@ -91,7 +91,7 @@ engine = create_engine(sql_url)
 
 # get a connection
 # conn = engine.connect()
-# curr = conn.execute(text("""SELECT s, p, o
+# curr = conn.execute(text("""SELECT s, p, o, neem_id
 # FROM test.triples
 # ORDER BY _id;"""))
 # known_ns = [OWL, RDF, RDFS, XSD, soma, dul, iolite, urdf, srdl2_cap, kitchen, pr2, iai_kitchen_knowledge, knowrob, iai_kitchen_objects, srdl2_comp]

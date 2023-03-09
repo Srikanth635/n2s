@@ -61,17 +61,20 @@ def print_all_collection_types(collection):
     find_datatype(single_doc)
 
 class SQLCreator():
-    def __init__(self, value_mapping_func=None) -> None:
+    def __init__(self, value_mapping_func=None, allowed_missing_percentage=5) -> None:
         self.not_always_there = []
         self.sql_table_creation_cmds = OrderedSet()
         self.data_to_insert = {}
         self.meta_data = {}
         self.all_obj_keys = {}
+        self.obj_key_count = {}
         self.one_item_lists = []
         self.not_one_item_lists = []
         self.name_type = {}
         self.value_mapping_func = value_mapping_func if value_mapping_func is not None else mon2py
-        
+        self.linked_table_names = OrderedSet()
+        self.allowed_missing_percentage = allowed_missing_percentage
+
     def reset_data(self):
         self.sql_table_creation_cmds = OrderedSet()
         self.data_to_insert = {}
@@ -97,13 +100,13 @@ class SQLCreator():
             self.data_to_insert[key][column_name] = ['NULL']*n_rows + [v]
         else:
             self.data_to_insert[key][column_name].append(v)
-    
+
     def find_relationships(self, key, obj, parent_key=None):
         if '#' in key:
             key = key.split('#')[1]
         if type(obj) == dict:
             obj_k = list(map(lambda x: x.split('#')[1] if '#' in x else x, obj.keys()))
-            if key in self.all_obj_keys.keys():       
+            if key in self.all_obj_keys.keys():
                 for k, v in obj.items():
                     if '#' in k:
                         k = k.split('#')[1]
@@ -114,10 +117,13 @@ class SQLCreator():
                         self.not_always_there.append(key+'.'+k)
             else:
                 self.all_obj_keys[key] = {}
+                self.obj_key_count[key] = {'key_count': 0}
 
+            self.obj_key_count[key]['key_count'] += 1
             for k, v in obj.items():
                 if '#' in k:
                     k = k.split('#')[1]
+                self.obj_key_count[key][k] = self.obj_key_count[key].get(k, 0) + 1
                 if type(v) == list:
                     if len(v) == 1:
                         if key+'.'+k not in self.one_item_lists and key+'.'+k not in self.not_one_item_lists:
@@ -137,11 +143,29 @@ class SQLCreator():
         elif np.iterable(obj) and type(obj) != str:
             table_name = parent_key+'_'+key
             for v in obj:
-                if type(v) not in [dict, list]:
-                    v = {'value':v}
-                self.find_relationships(key, v, table_name)
+                # if type(v) not in [dict, list]:
+                #     v = {'value':v}
+                if type(v) == dict:
+                    if len(v) == 1:
+                        if table_name not in self.one_item_lists and table_name not in self.not_one_item_lists:
+                            self.one_item_lists.append(table_name)
+                    else:
+                        if table_name not in self.not_one_item_lists:
+                            self.not_one_item_lists.append(table_name)
+                        if table_name in self.one_item_lists:
+                            self.one_item_lists.remove(table_name)
+                self.find_relationships(key, v, parent_key)
         else:
             self.all_obj_keys[key] = []
+
+    def filter_null_tables(self):
+        for key, all_count in self.obj_key_count.items():
+            total_count = all_count['key_count']
+            for k, count in all_count.items():
+                if k == 'key_count':
+                    continue
+                if ((1 - count/total_count) * 100) > self.allowed_missing_percentage:
+                    self.not_always_there.append(key+'.'+k)  
 
     def convert_to_sql(self, key, obj, parent_key=None, key_iri='', parent_key_iri='', parent_table_name=''):
         
@@ -159,12 +183,15 @@ class SQLCreator():
         
         # This is for making sure that this string object is not actually and ontology defined array.
         # if it is an ontology defined array, then a mapping is performed on the string to convert it to a list.
+        mapped_already = False
         if parent_key is not None and type(obj) == str and parent_key_iri != '' and '_' not in parent_key:
             if ' ' in obj or ',' in obj:
                 obj = self.value_mapping_func(obj, name=parent_key_iri+parent_key)
+                mapped_already = True
 
         if type(obj) == dict:
             table_name = key if parent_key is None else parent_key+'_'+key
+
             id_col_string = f"CREATE TABLE IF NOT EXISTS {table_name} (ID INT NOT NULL AUTO_INCREMENT PRIMARY KEY);"
             self.sql_table_creation_cmds.add(id_col_string)
 
@@ -177,18 +204,18 @@ class SQLCreator():
                     k = k.split('#')[1]
                 if type(v) != list:
                     if key+'.'+k in self.not_always_there:
-                        del obj[orig_k]
                         obj[orig_k] = [v]
-                elif key+'.'+k in self.one_item_lists and key+'.'+k not in self.not_always_there:
-                        if type(v[0]) == dict:
-                            del obj[orig_k]
-                            for k2, v2 in v[0].items():
-                                if k2 == '@value':
-                                    obj[orig_k] = v2
-                                else:
-                                    obj[orig_k+'_'+k2] = v2
-                        else:
-                            obj[orig_k] = v[0]
+                else:
+                    if key+'.'+k in self.one_item_lists and key+'.'+k not in self.not_always_there:
+                        obj[orig_k] = v[0]
+                        if type(v[0]) != dict:
+                            continue
+                        if key+'_'+k not in self.one_item_lists:
+                            continue
+                        # This is a one item dict, so we can just map it to the value.
+                        for k2, v2 in v[0].items():
+                            if k2 in ['@value','@id']:
+                                obj[orig_k] = v2
 
             # Insertion                        
             # This checks if all the keys (i.e. columns) where defined before, and have values already.
@@ -252,13 +279,14 @@ class SQLCreator():
                     # Values are inserted here for non nested columns (i.e. non iterable columns except for str)
                     self.insert_column_and_value(table_name, k, v, v_type)
 
+            max_len = max([len(v) for k, v in self.data_to_insert[table_name].items()])
             for k, v in self.data_to_insert[table_name].items():
-                if k not in obj.keys() and k != "ID":
-                    self.data_to_insert[table_name][k].append('NULL')
+                if len(v) < max_len:
+                    self.data_to_insert[table_name][k].extend(['NULL']*int(max_len-len(v)))
 
         elif np.iterable(obj) and type(obj) != str:
             # Creation
-            table_name = parent_key+'_'+key
+            table_name = parent_key+'_'+key+'_index'
             id_col_string = f"CREATE TABLE IF NOT EXISTS {table_name} (ID INT AUTO_INCREMENT NOT NULL PRIMARY KEY,"
             if parent_key is None:
                 parent_key = "parent"
@@ -276,7 +304,7 @@ class SQLCreator():
                 self.data_to_insert[table_name]['ID'] = []
                 self.data_to_insert[table_name][parent_key+'_ID'] = []
                 self.data_to_insert[table_name]['list_index'] = []
-            parent_id = len(self.data_to_insert[parent_key]['ID'])
+            parent_id = len(self.data_to_insert[parent_table_name]['ID'])
             i = 1
 
             for v in obj:
@@ -284,10 +312,18 @@ class SQLCreator():
                 self.data_to_insert[table_name][parent_key+'_ID'].append(parent_id)
                 self.data_to_insert[table_name]['ID'].append('NULL')
                 self.data_to_insert[table_name]['list_index'].append(i)
-                if ((not np.iterable(v)) or type(v) == str):
-                    v = {'value':v}
-                k_table_name = parent_key+'_'+key+'_value'
-                v, v_type, v_iterable, v_id = self.convert_to_sql(key+'_value', v, parent_key=parent_key, parent_key_iri=iri, parent_table_name=table_name)
+
+                # if type(v) == str:
+                #     v = {'value':v} # This makes strings be a many to many relationship.
+
+                k_table_name = parent_key+'_'+key
+
+                if np.iterable(v) and type(v) != str:
+                    v, v_type, v_iterable, v_id = self.convert_to_sql(key, v, parent_key=parent_key, parent_key_iri=iri, parent_table_name=table_name)
+                else:
+                    v_type = type(v)
+                    v_iterable = False
+                    v_id = None
 
                 # This means we are in the meta file, which we know the structure of.
                 if v_iterable:
@@ -306,11 +342,12 @@ class SQLCreator():
 
                 else:
                     # Insertion
-                    self.insert_column_and_value(table_name, f'{parent_key}_{key}_values', v, v_type)
+                    self.insert_column_and_value(table_name, f'{key}_values', v, v_type)
 
                 i += 1
         else:
-            obj = self.value_mapping_func(obj, name=parent_key_iri+parent_key)
+            if not mapped_already:
+                obj = self.value_mapping_func(obj, name=parent_key_iri+parent_key)
         return obj, type(obj), np.iterable(obj) and type(obj) != str, ID
 
     def link_column_to_exiting_table(self, table_name, col_name, type_name, indicies):
@@ -469,7 +506,7 @@ class SQLCreator():
             # # To commit the changes
             conn.commit()
 
-def neem_collection_to_sql(name, collection, sql_creator=None, neem_id=None):
+def neem_collection_to_sql(name, collection, sql_creator=None, neem_id=None, allowed_missing_percentage=5):
     single_doc = collection.find_one({})
     if single_doc is None:
         print(f"NO DOCUMENTS FOUND FOR {name} with neem_id {str(neem_id)}")
@@ -492,6 +529,7 @@ def neem_collection_to_sql(name, collection, sql_creator=None, neem_id=None):
                 all_docs_list.append(doc)
             for doc in all_docs_list:
                 meta_sql_creator.find_relationships(name, doc)
+            meta_sql_creator.filter_null_tables()
             sql_creator.not_always_there.extend(meta_sql_creator.not_always_there)
             sql_creator.one_item_lists.extend(meta_sql_creator.one_item_lists)
             for doc in all_docs_list:
@@ -531,6 +569,8 @@ def json_to_sql(top_table_name, json_data, sqlalachemy_engine, filter_doc=None, 
                     continue
             func(name, doc)
             n_doc += 1
+        if f_i == 0:
+            sql_creator.filter_null_tables()
     sql_creator.reference_to_existing_table()
     print("number_of_json_documents = ", n_doc)
     sql_creator.upload_data_to_sql(drop_tables=drop_tables, sqlalchemy_engine=sqlalachemy_engine)
