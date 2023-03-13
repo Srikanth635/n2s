@@ -41,6 +41,7 @@ def xsd_2_mysql_type(property_name, o):
 def ont_2_py(obj, name):
     o = obj
     property_name = URIRef(name)
+    # print(property_name.n3(g.namespace_manager))
     for _, _, value in g.triples((property_name, RDFS.range, None)):
         val = value.n3(g.namespace_manager)
         if val not in data_types['types']:
@@ -88,7 +89,6 @@ g.bind("srdl2-comp", srdl2_comp)
 # Create sqlalchemy engine
 sql_url = os.environ['LOCAL_SQL_URL']
 engine = create_engine(sql_url)
-
 # get a connection
 # conn = engine.connect()
 # curr = conn.execute(text("""SELECT s, p, o, neem_id
@@ -114,13 +114,15 @@ engine = create_engine(sql_url)
 # print(json.dumps(triples_ns, indent=4))
 # print(len(triples_ns))
 g.parse("test.json", format="json-ld")
-
-# Get all data types
-for s, p, o in g:
-    col_type = ont_2_py(o, p)
+# for _, _, value in g.triples((None, RDFS.range, None)):
+#     print(value.n3(g.namespace_manager))
+# # Get all data types
+# for s, p, o in g:
+#     print(s.n3(g.namespace_manager), p.n3(g.namespace_manager), o.n3(g.namespace_manager))
+#     col_type = ont_2_py(o, p)
 # print(json.dumps(list(zip(data_types['types'],data_types['values'])),sort_keys=True, indent=4))
-print(json.dumps(all_property_types,sort_keys=True, indent=4))
-print("number of datatybes = ", len(data_types['types']))
+# print(json.dumps(all_property_types,sort_keys=True, indent=4))
+# print("number of datatybes = ", len(data_types['types']))
 # exit()
 
 # Create a json file from the graph

@@ -22,7 +22,7 @@ def mon2py(val, name=None):
     elif type(val) == ObjectId:
         return str(val)
     elif type(val) == datetime:
-        return val.timestamp()
+        return val.timestamp() + 60*60
     else:
         return val
 
@@ -173,6 +173,8 @@ class SQLCreator():
         ID = None
 
         # This is to preserve the iri of ontology defined terms.
+        if 'hasParticipant' in key or 'hasParticipant' in str(parent_key):
+            print('here')
         orig_key = key
         iri = ''
         if '#' in orig_key:
