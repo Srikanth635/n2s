@@ -26,7 +26,7 @@ def mon2py(val, name=None):
     else:
         return val
 
-def py2sql(val_type, id=False):
+def py2sql(val_type, id=False, use_long_text=True):
     if id:
         return 'VARCHAR(24)'
     elif val_type == int:
@@ -34,7 +34,10 @@ def py2sql(val_type, id=False):
     elif val_type == float:
         return 'DOUBLE'
     elif val_type == str:
-        return 'LONGTEXT'
+        if use_long_text:
+            return 'TEXT'
+        else:
+            return 'VARCHAR(256)'
     elif val_type == bool:
         return 'BOOLEAN'
     elif val_type == None:
@@ -61,7 +64,7 @@ def print_all_collection_types(collection):
     find_datatype(single_doc)
 
 class SQLCreator():
-    def __init__(self, value_mapping_func=None, allowed_missing_percentage=5) -> None:
+    def __init__(self, value_mapping_func=None, allowed_missing_percentage=5, use_long_text=True) -> None:
         self.not_always_there = []
         self.sql_table_creation_cmds = OrderedSet()
         self.data_to_insert = {}
@@ -74,6 +77,7 @@ class SQLCreator():
         self.value_mapping_func = value_mapping_func if value_mapping_func is not None else mon2py
         self.linked_table_names = OrderedSet()
         self.allowed_missing_percentage = allowed_missing_percentage
+        self.use_long_text = use_long_text
 
     def reset_data(self):
         self.sql_table_creation_cmds = OrderedSet()
@@ -82,7 +86,7 @@ class SQLCreator():
     def insert_column_and_value(self, table_name, column_name, v, v_type):
         key = table_name
         id = True if column_name in ['_id', 'neem_id'] else False
-        data_type = py2sql(v_type, id=id)
+        data_type = py2sql(v_type, id=id, use_long_text=self.use_long_text)
         if data_type is not None:
             null, unique = True, False
             if id:
@@ -173,8 +177,6 @@ class SQLCreator():
         ID = None
 
         # This is to preserve the iri of ontology defined terms.
-        if 'hasParticipant' in key or 'hasParticipant' in str(parent_key):
-            print('here')
         orig_key = key
         iri = ''
         if '#' in orig_key:
@@ -288,14 +290,19 @@ class SQLCreator():
 
         elif np.iterable(obj) and type(obj) != str:
             # Creation
-            table_name = parent_key+'_'+key+'_index'
-            id_col_string = f"CREATE TABLE IF NOT EXISTS {table_name} (ID INT AUTO_INCREMENT NOT NULL PRIMARY KEY,"
-            if parent_key is None:
-                parent_key = "parent"
-            id_col_string += f"{parent_key}_ID INT NULL);"
+            if parent_key is not None:
+                table_name = parent_key+'_'+key+'_index'
+            else:
+                table_name = key+'_index'
+            id_col_string = f"CREATE TABLE IF NOT EXISTS {table_name} (ID INT AUTO_INCREMENT NOT NULL PRIMARY KEY"
+            if parent_key is not None:
+                id_col_string += f",{parent_key}_ID INT NULL);"
+            else:
+                id_col_string += f");"
             self.sql_table_creation_cmds.add(id_col_string)
 
-            self.add_fk(parent_table_name=parent_table_name, table_name=table_name, col_name=parent_key+'_ID')
+            if parent_key is not None:
+                self.add_fk(parent_table_name=parent_table_name, table_name=table_name, col_name=parent_key+'_ID')
             
             # element position index column
             self.add_col(table_name, 'list_index', 'INT', 'NULL')
@@ -304,21 +311,29 @@ class SQLCreator():
             if table_name not in self.data_to_insert.keys():
                 self.data_to_insert[table_name] = {}
                 self.data_to_insert[table_name]['ID'] = []
-                self.data_to_insert[table_name][parent_key+'_ID'] = []
+                if parent_key is not None:
+                    self.data_to_insert[table_name][parent_key+'_ID'] = []
                 self.data_to_insert[table_name]['list_index'] = []
-            parent_id = len(self.data_to_insert[parent_table_name]['ID'])
+            if parent_key is not None:
+                parent_id = len(self.data_to_insert[parent_table_name]['ID'])
             i = 1
 
             for v in obj:
                 # Insertion
-                self.data_to_insert[table_name][parent_key+'_ID'].append(parent_id)
+                if parent_key is not None:
+                    self.data_to_insert[table_name][parent_key+'_ID'].append(parent_id)
                 self.data_to_insert[table_name]['ID'].append('NULL')
                 self.data_to_insert[table_name]['list_index'].append(i)
-
+                ID = i
+                if type(v) == list:
+                    v = {f'i_{v_i+1}':v[v_i] for v_i in range(len(v))}
                 # if type(v) == str:
                 #     v = {'value':v} # This makes strings be a many to many relationship.
 
-                k_table_name = parent_key+'_'+key
+                if parent_key is not None:
+                    k_table_name = parent_key+'_'+key
+                else:
+                    k_table_name = key
 
                 if np.iterable(v) and type(v) != str:
                     v, v_type, v_iterable, v_id = self.convert_to_sql(key, v, parent_key=parent_key, parent_key_iri=iri, parent_table_name=table_name)
@@ -349,6 +364,8 @@ class SQLCreator():
                 i += 1
         else:
             if not mapped_already:
+                parent_key_iri = "" if parent_key_iri is None else parent_key_iri
+                parent_key = "" if parent_key is None else parent_key
                 obj = self.value_mapping_func(obj, name=parent_key_iri+parent_key)
         return obj, type(obj), np.iterable(obj) and type(obj) != str, ID
 
@@ -507,6 +524,8 @@ class SQLCreator():
         
             # # To commit the changes
             conn.commit()
+    
+
 
 def neem_collection_to_sql(name, collection, sql_creator=None, neem_id=None, allowed_missing_percentage=5):
     single_doc = collection.find_one({})
@@ -575,6 +594,43 @@ def json_to_sql(top_table_name, json_data, sqlalachemy_engine, filter_doc=None, 
             sql_creator.filter_null_tables()
     sql_creator.reference_to_existing_table()
     print("number_of_json_documents = ", n_doc)
+    sql_creator.upload_data_to_sql(drop_tables=drop_tables, sqlalchemy_engine=sqlalachemy_engine)
+
+def dict_to_sql(data, sqlalachemy_engine, drop_tables=False, find_link_func=None):
+    sql_creator = SQLCreator(use_long_text=False)
+    for key, docs in data.items():
+        for doc in docs:
+            sql_creator.convert_to_sql(key, doc)
+    if find_link_func is not None:
+        for key, cols in sql_creator.data_to_insert.items():
+            if key == 'rdf_type':
+                continue
+            for col_name, col_data in cols.items():
+                    all_ok = True
+                    prev_dtype = ''
+                    indicies = []
+                    for v in col_data:
+                        idx, dtype = find_link_func(v)
+                        if prev_dtype != '':
+                            # all_ok = dtype == prev_dtype
+                            pass
+                        all_ok = dtype != None
+                        if not all_ok:
+                            break
+                        prev_dtype = dtype
+                        indicies.append(idx)
+                    if all_ok:
+                        sql_creator.link_column_to_exiting_table(key, col_name,'rdf_type', indicies)
+        # id_col_string = f"CREATE TABLE IF NOT EXISTS {key} (ID INT NOT NULL AUTO_INCREMENT PRIMARY KEY);"
+        # sql_creator.sql_table_creation_cmds.add(id_col_string)
+        # for k, v in obj.items():
+        #     dtype = py2sql(type(v[0]))
+        #     if dtype is None:
+        #         raise ValueError(f"Cannot convert {v[0]} with python type {type(v[0])} to SQL type")
+        #     sql_creator.add_col(key,k,dtype)
+        # sql_creator.convert_to_sql(key, obj)
+    # sql_creator.convert_to_sql("triples", data)
+    # sql_creator.data_to_insert = data
     sql_creator.upload_data_to_sql(drop_tables=drop_tables, sqlalchemy_engine=sqlalachemy_engine)
 
 if __name__ == "__main__":
