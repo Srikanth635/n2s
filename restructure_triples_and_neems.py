@@ -13,6 +13,7 @@ from sqlalchemy import create_engine
 from sqlalchemy import text
 from copy import deepcopy
 from orderedset import OrderedSet
+from triples_to_sql import TriplesToSQL
 
 
 # mongo_to_python_conversions
@@ -83,7 +84,7 @@ class SQLCreator():
         self.sql_table_creation_cmds = OrderedSet()
         self.data_to_insert = {}
     
-    def insert_column_and_value(self, table_name, column_name, v, v_type):
+    def insert_column_and_value(self, table_name, column_name, v, v_type, null_prev_rows=True):
         key = table_name
         id = True if column_name in ['_id', 'neem_id'] else False
         data_type = py2sql(v_type, id=id, use_long_text=self.use_long_text)
@@ -99,9 +100,12 @@ class SQLCreator():
         v = 'NULL' if v is None else v
         v = -1 if v == float('inf') else v
         if column_name not in self.data_to_insert[key].keys():
-            # The NULL values here are for previous rows that did not have a value for this column
-            n_rows = len(self.data_to_insert[key]['ID']) - 1
-            self.data_to_insert[key][column_name] = ['NULL']*n_rows + [v]
+            if null_prev_rows:
+                # The NULL values here are for previous rows that did not have a value for this column
+                n_rows = len(self.data_to_insert[key]['ID']) - 1
+                self.data_to_insert[key][column_name] = ['NULL']*n_rows + [v]
+            else:
+                self.data_to_insert[key][column_name] = [v]
         else:
             self.data_to_insert[key][column_name].append(v)
 
@@ -171,7 +175,7 @@ class SQLCreator():
                 if ((1 - count/total_count) * 100) > self.allowed_missing_percentage:
                     self.not_always_there.append(key+'.'+k)  
 
-    def convert_to_sql(self, key, obj, parent_key=None, key_iri='', parent_key_iri='', parent_table_name=''):
+    def convert_to_sql(self, key, obj, parent_key=None, key_iri='', parent_key_iri='', parent_table_name='', parent_list=False):
         
         # This is the ID of the object/row in the sql table.
         ID = None
@@ -225,9 +229,9 @@ class SQLCreator():
             # This checks if all the keys (i.e. columns) where defined before, and have values already.
             all_keys_exist = False
             if table_name in self.data_to_insert.keys():
-                # if parent_iterable:
-                if type(self.data_to_insert[table_name]) == dict:
-                    all_keys_exist = all([k in self.data_to_insert[table_name].keys() for k in obj.keys()])
+                if parent_list:
+                    if type(self.data_to_insert[table_name]) == dict:
+                        all_keys_exist = all([k in self.data_to_insert[table_name].keys() for k in obj.keys()])
             else:
                 self.data_to_insert[table_name] = {}
                 self.data_to_insert[table_name]['ID'] = []
@@ -239,7 +243,8 @@ class SQLCreator():
             #  and the keys and values of that dict are the column_names and their respective values
             # For example: self.data_to_insert['neems']['ID'] = [id1, id2, id3], where 'neems' is the table name
             # 'ID' is the column_name, and 'id1' to 'id3' are 3 values for 3 different rows in the 'ID' column.
-            if all_keys_exist:
+            start = time()
+            if all_keys_exist and parent_list:
                 rows = zip(*tuple([self.data_to_insert[table_name][k] for k in obj.keys()]))
                 rows_list = list(rows)
                 row = tuple(filter(mon2py,obj.values()))
@@ -251,6 +256,7 @@ class SQLCreator():
                     return obj, type(obj), np.iterable(obj) and type(obj) != str, ID
                 else:
                     ID = len(rows_list) + 1
+                print("Time to check if all values exist: ", time()-start)
             elif ID is None:
                 ID = len(self.data_to_insert[table_name]['ID']) + 1
 
@@ -336,7 +342,7 @@ class SQLCreator():
                     k_table_name = key
 
                 if np.iterable(v) and type(v) != str:
-                    v, v_type, v_iterable, v_id = self.convert_to_sql(key, v, parent_key=parent_key, parent_key_iri=iri, parent_table_name=table_name)
+                    v, v_type, v_iterable, v_id = self.convert_to_sql(key, v, parent_key=parent_key, parent_key_iri=iri, parent_table_name=table_name, parent_list=True)
                 else:
                     v_type = type(v)
                     v_iterable = False
@@ -370,9 +376,10 @@ class SQLCreator():
         return obj, type(obj), np.iterable(obj) and type(obj) != str, ID
 
     def link_column_to_exiting_table(self, table_name, col_name, type_name, indicies):
-        self.data_to_insert[table_name][col_name] = indicies
-        self.sql_table_creation_cmds.add(f"ALTER TABLE {table_name} DROP COLUMN IF EXISTS {col_name};")
-        self.add_fk_column(parent_table_name=type_name, table_name=table_name, col_name=col_name)
+        for i,j in indicies:
+            self.data_to_insert[table_name][col_name][i] = j
+        self.sql_table_creation_cmds.add(f"ALTER TABLE {table_name} MODIFY COLUMN {col_name} INT;")
+        self.add_fk(parent_table_name=type_name, table_name=table_name, col_name=col_name)
     
     def add_fk_column(self, parent_table_name, table_name, col_name, parent_col_name='ID'):
         self.add_col(table_name, col_name, 'INT')
@@ -383,10 +390,12 @@ class SQLCreator():
         self.sql_table_creation_cmds.add(col_string)
     
     def add_col(self, table_name, col_name, col_type, NULL=True, KEY='', UNIQUE=False, DEFAULT=None, AUTO_INCREMENT=False):
-        NULL = 'NOT NULL' if not NULL else 'NULL'
-        UNIQUE = 'UNIQUE' if UNIQUE else ''
-        AUTO_INCREMENT = 'AUTO_INCREMENT' if AUTO_INCREMENT else ''
-        col_string = f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS {col_name} {col_type} {NULL} {KEY} {AUTO_INCREMENT} {UNIQUE}"
+        NULL = ' NOT NULL' if not NULL else ' NULL'
+        UNIQUE = ' UNIQUE' if UNIQUE else ''
+        AUTO_INCREMENT = ' AUTO_INCREMENT' if AUTO_INCREMENT else ''
+        if KEY != '':
+            KEY = f' {KEY}'
+        col_string = f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS {col_name} {col_type}{NULL}{KEY}{AUTO_INCREMENT}{UNIQUE}"
         if DEFAULT is not None:
             col_string += f" DEFAULT {DEFAULT}"
         col_string += ';'
@@ -517,8 +526,8 @@ class SQLCreator():
                 cmd = re.sub("(\*)","_star", cmd)
             if '@' in cmd:
                 cmd = re.sub("(@)","_", cmd)
-            if 'range' in cmd:
-                cmd = re.sub("range","range_", cmd)
+            # if 'range' in cmd:
+            #     cmd = re.sub("range","range_", cmd)
             # # To execute the SQL query
             conn.execute(text(cmd))
         
@@ -548,13 +557,17 @@ def neem_collection_to_sql(name, collection, sql_creator=None, neem_id=None, all
                 if neem_id is not None:
                     doc["neem_id"] = deepcopy(neem_id)
                 all_docs_list.append(doc)
+            start = time()
             for doc in all_docs_list:
                 meta_sql_creator.find_relationships(name, doc)
+            print("find_relationship_time = ", time() - start)
             meta_sql_creator.filter_null_tables()
             sql_creator.not_always_there.extend(meta_sql_creator.not_always_there)
             sql_creator.one_item_lists.extend(meta_sql_creator.one_item_lists)
+            start = time()
             for doc in all_docs_list:
                 sql_creator.convert_to_sql(name, doc)
+            print("convert_to_sql_time = ", time() - start)
             done = True
         except errors.InvalidBSON:
             doc = None
@@ -596,42 +609,55 @@ def json_to_sql(top_table_name, json_data, sqlalachemy_engine, filter_doc=None, 
     print("number_of_json_documents = ", n_doc)
     sql_creator.upload_data_to_sql(drop_tables=drop_tables, sqlalchemy_engine=sqlalachemy_engine)
 
-def dict_to_sql(data, sqlalachemy_engine, drop_tables=False, find_link_func=None):
-    sql_creator = SQLCreator(use_long_text=False)
+def dict_to_sql(data, sql_creator=None, find_link_func=None, neem_id=None):
+    if sql_creator is None:
+        sql_creator = SQLCreator(use_long_text=False)
+    neem_id_val = mon2py(deepcopy(neem_id)) if neem_id is not None else None
     for key, docs in data.items():
+        if '"' in key:
+            key = re.sub('(\")',"", key)
         for doc in docs:
+            doc['neem_id'] = neem_id_val
             sql_creator.convert_to_sql(key, doc)
-    if find_link_func is not None:
-        for key, cols in sql_creator.data_to_insert.items():
-            if key == 'rdf_type':
-                continue
-            for col_name, col_data in cols.items():
-                    all_ok = True
-                    prev_dtype = ''
-                    indicies = []
-                    for v in col_data:
-                        idx, dtype = find_link_func(v)
-                        if prev_dtype != '':
-                            # all_ok = dtype == prev_dtype
-                            pass
-                        all_ok = dtype != None
-                        if not all_ok:
-                            break
-                        prev_dtype = dtype
-                        indicies.append(idx)
-                    if all_ok:
-                        sql_creator.link_column_to_exiting_table(key, col_name,'rdf_type', indicies)
-        # id_col_string = f"CREATE TABLE IF NOT EXISTS {key} (ID INT NOT NULL AUTO_INCREMENT PRIMARY KEY);"
-        # sql_creator.sql_table_creation_cmds.add(id_col_string)
-        # for k, v in obj.items():
-        #     dtype = py2sql(type(v[0]))
-        #     if dtype is None:
-        #         raise ValueError(f"Cannot convert {v[0]} with python type {type(v[0])} to SQL type")
-        #     sql_creator.add_col(key,k,dtype)
-        # sql_creator.convert_to_sql(key, obj)
-    # sql_creator.convert_to_sql("triples", data)
-    # sql_creator.data_to_insert = data
-    sql_creator.upload_data_to_sql(drop_tables=drop_tables, sqlalchemy_engine=sqlalachemy_engine)
+            sql_creator.add_fk('neems', key, 'neem_id', parent_col_name="_id")
+
+def link_predicate_tables(find_link_func, sql_creator):
+    data_to_insert_cp = deepcopy(sql_creator.data_to_insert)
+    for key, cols in data_to_insert_cp.items():
+        if key == 'rdf_type':
+            continue
+        # at_least_one_col_ok = False
+        for i, (col_name, col_data) in enumerate(cols.items()):
+                all_ok = True
+                prev_dtype = ''
+                indicies = []
+                had_int = False
+                for v_i, v in enumerate(col_data):
+                    if type(v) != str:
+                        had_int = True
+                        continue
+                    idx, dtype = find_link_func(v, data_to_insert_cp)
+                    if prev_dtype != '':
+                        # all_ok = dtype == prev_dtype
+                        pass
+                    all_ok = dtype != None
+                    if not all_ok and col_name != 'ID' and had_int:
+                        print(f"not all ok for {key} {col_name} {v} {dtype} {prev_dtype}")
+                    if not all_ok:
+                        break
+                    prev_dtype = dtype
+                    indicies.append((v_i, idx))
+                if all_ok:
+                    # at_least_one_col_ok = True
+                    sql_creator.link_column_to_exiting_table(key, col_name,'rdf_type', indicies)
+        # if not at_least_one_col_ok and neem_id_val is not None:
+        #     for _ in range(len(sql_creator.data_to_insert[key]['ID'])):
+        #         sql_creator.insert_column_and_value(key,
+        #                                             'neem_id',
+        #                                             neem_id_val,
+        #                                             v_type=type(neem_id_val),
+        #                                             null_prev_rows=False)
+        #     sql_creator.add_fk('neems', key, 'neem_id', parent_col_name="_id")
 
 if __name__ == "__main__":
 
@@ -661,38 +687,51 @@ if __name__ == "__main__":
     n_doc = 0
     creation_time_s = time()
     for doc in cursor:
+
         n_doc += 1
         print(doc)
         id = str(doc['_id'])
-        neem_ids.append(id)
+        neem_ids.append(doc['_id'])
+
         tf = db.get_collection(id + '_tf')
         neem_collection_to_sql("tf",
                                tf,
                                sql_creator=sql_creator,
                                neem_id=doc['_id'])
+        
         annotations = db.get_collection(id + '_annotations')
         neem_collection_to_sql("annotations",
                           annotations,
                           sql_creator=sql_creator,
                           neem_id=doc['_id'])
-        triples = db.get_collection(id + '_triples')
-        neem_collection_to_sql("triples",
-                          triples,
-                          sql_creator=sql_creator,
-                          neem_id=doc['_id'])
+        
         inferred = db.get_collection(id + '_inferred')
         neem_collection_to_sql("inferred",
                           inferred,
                           sql_creator=sql_creator,
                           neem_id=doc['_id'])
-        if n_doc >= 1:
+        if n_doc >= 2:
             break
 
-    client.close()
     print("Creation Time = ", time() - creation_time_s)
     print("number of docs = {}".format(n_doc))
      
     # create tables and upload data to the sql database
     sql_url = os.environ["LOCAL_SQL_URL"]
     engine = create_engine(sql_url)
+
     sql_creator.upload_data_to_sql(sqlalchemy_engine=engine)
+    sql_creator = SQLCreator(use_long_text=False)
+    all_triples = []
+    for id in neem_ids:
+        t2sql = TriplesToSQL()
+        triples = db.get_collection(str(id) + '_triples')
+        t2sql.mongo_triples_to_graph(triples)
+        predicate_dict = t2sql.graph_to_dict()
+        dict_to_sql(predicate_dict,
+                sql_creator=sql_creator,
+                find_link_func=t2sql.find_link_in_graph_dict,
+                neem_id=id)
+    link_predicate_tables(t2sql.find_link_in_graph_dict, sql_creator)
+    sql_creator.upload_data_to_sql(sqlalchemy_engine=engine)
+    client.close()

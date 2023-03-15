@@ -2,10 +2,14 @@ import os
 from sqlalchemy import create_engine, text
 from rdflib import Graph, URIRef, RDF, RDFS, OWL, Literal, Namespace, XSD
 import json
-from restructure_triples_and_neems import json_to_sql, dict_to_sql
 from sqlalchemy import create_engine
 import re
 from copy import deepcopy
+from pymongo import MongoClient
+from datetime import datetime
+from bson.decimal128 import Decimal128
+
+
 
 
 class TriplesToSQL:
@@ -43,6 +47,8 @@ class TriplesToSQL:
         known_ns = [OWL, RDF, RDFS, XSD, soma, dul, iolite, urdf, srdl2_cap, kitchen, pr2, iai_kitchen_knowledge, knowrob, iai_kitchen_objects, srdl2_comp]
         known_ns_names = ['owl', 'rdf', 'rdfs', 'xsd', 'soma', 'dul', 'iolite', 'urdf', 'srdl2_cap', 'kitchen', 'pr2', 'iai_kitchen_knowledge', 'knowrob', 'iai_kitchen_objects', 'srdl2_comp']
         self.ns = {knsname: kns for knsname, kns in zip(known_ns_names, known_ns)}
+        self.predicate_dict = {}
+        self.type_name = {}
 
     def xsd_2_mysql_type(self, property_name, o):
         for _, _, value in self.g.triples((property_name, RDFS.range, None)):
@@ -117,9 +123,35 @@ class TriplesToSQL:
         conn.close()
         # print(json.dumps(self.ns, indent=4))
         # print(len(self.ns))
+    
+    def mongo_triples_to_graph(self, collection):
+        py2xsd = {int: XSD.integer, float: XSD.float, str: XSD.string, bool: XSD.boolean, list: self.ns['soma'].array_double,
+                  datetime: XSD.dateTime}
+        for docs in collection.find():
+            v = [docs['s'], docs['p'], docs['o']]
+            new_v = [0, 0, 0]
+            for i in range(3):
+                if not isinstance(v[i], str):
+                    if isinstance(v[i], Decimal128):
+                        v[i] = float(v[i].to_decimal())
+                    new_v[i] = Literal(v[i], datatype=py2xsd[type(v[i])])
+                    # if not type(v[i]) == float:
+                    #     print('not str', v[i])
+                    continue
+                if 'http' in v[i] and '#' in v[i]:
+                    ns_name = v[i].split('#')[0].split('/')[-1].split('.owl')[0]
+                    ns_iri = v[i].split('#')[0]+'#'
+                    if ns_iri not in self.ns.values():
+                        self.ns[ns_name] = Namespace(v[i].split('#')[0]+'#')         
+                new_v[i] = URIRef(v[i].strip('<>')) if '#' in v[i] else Literal(v[i].strip('<>'))
+            self.g.add((new_v[0], new_v[1], new_v[2]))
+            # break
+        # print(json.dumps(self.ns, indent=4))
+        # print(len(self.ns))
 
-    def graph_to_dict(self, dump=False):
+    def graph_to_dict(self, dump=False, graph=None):
         predicate_dict = {}
+        g = self.g if graph is None else graph
         for s, p, o in self.g:
             p_n3 = p.n3(self.g.namespace_manager)
             if p_n3 not in predicate_dict:
@@ -146,7 +178,6 @@ class TriplesToSQL:
 
         predicate_dict_cp = deepcopy(predicate_dict)
         new_predicate_dict = {}
-        self.type_name = {}
         for p in predicate_dict_cp:
             d, r = 's', 'o'
             dtype = ''
@@ -154,6 +185,7 @@ class TriplesToSQL:
                 d = predicate_dict_cp['rdfs:domain']['o'][predicate_dict_cp['rdfs:domain']['s'].index(p)]
                 self.type_name[d] = {}
                 d = re.sub(':|-', '_', d)
+                d += '_s'
                 self.type_name[d] = d
                 predicate_dict[p][d] = predicate_dict[p]['s']
                 del predicate_dict[p]['s']
@@ -165,8 +197,7 @@ class TriplesToSQL:
                 if dtype != 'rdfs:Datatype' and 'xsd' not in r:
                     self.type_name[r] = {}
                     r = re.sub(':|-', '_', r)
-                    if d == r:
-                        r += '_o'
+                    r += '_o'
                     self.type_name[r] = r
                     predicate_dict[p][r] = predicate_dict[p]['o']
                     del predicate_dict[p]['o']
@@ -177,15 +208,15 @@ class TriplesToSQL:
             keys = list(predicate_dict[new_p].keys())
             k1, k2 = keys[0], keys[1]
             new_predicate_dict[new_p] = [{k1:predicate_dict[new_p][k1][i], k2:predicate_dict[new_p][k2][i]} for i in range(len(predicate_dict[new_p][k1]))]
-        self.predicate_dict = predicate_dict
+        self.predicate_dict.update(predicate_dict)
         if dump:
             json.dump(new_predicate_dict, open('predicate_dict.json', 'w'), indent=4)
         return new_predicate_dict
     
-    def find_link_in_graph_dict(self, value):
-        if value in self.predicate_dict['rdf_type']['s']:
-            idx = self.predicate_dict['rdf_type']['s'].index(value)
-            return idx, self.predicate_dict['rdf_type']['o'][idx]
+    def find_link_in_graph_dict(self, value, data):
+        if value in data['rdf_type']['s']:
+            idx = data['rdf_type']['s'].index(value)
+            return idx+1, data['rdf_type']['o'][idx]
         return None, None
 
     def triples_json_filter_func(self, doc):
@@ -204,12 +235,15 @@ class TriplesToSQL:
 
 
 if __name__ == "__main__":
+    from restructure_triples_and_neems import json_to_sql, dict_to_sql
+
     # Create TriplesToSQL object
     t2sql = TriplesToSQL()
 
     # Create a graph from the sql database or from the json file
     create_graph_from_sql = False
-    create_graph_from_json = True
+    create_graph_from_json = False
+    create_graph_from_mongo = True
 
     # Save the graph to a json file
     save_graph_to_json = False
@@ -228,6 +262,16 @@ if __name__ == "__main__":
     elif create_graph_from_json:
         # Create a graph from the json file
         t2sql.g.parse("test.json", format="json-ld")
+    elif create_graph_from_mongo:
+        # Create a graph from the mongo database
+        # Replace the uri string with your MongoDB deployment's connection string.
+        MONGODB_URI = os.environ["LOCAL_MONGODB_URI"]
+        # set a 5-second connection timeout
+        client = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=5000, unicode_decode_error_handler='ignore')
+        db = client.neems
+        id = '5fc8ff968f880006aa208e19'
+        triples_collection = db.get_collection(id + '_triples')
+        t2sql.mongo_triples_to_graph(triples_collection)
     
     if save_graph_to_json:
         # Create a json file from the graph
