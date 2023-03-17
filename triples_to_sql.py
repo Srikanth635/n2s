@@ -15,8 +15,15 @@ from bson.decimal128 import Decimal128
 class TriplesToSQL:
     def __init__(self) -> None:   
         self.data_types = {'types': [], 'values': []}
+        self.reset_graph()
         self.all_property_types = {}
-
+        self.predicate_dict = {}
+        self.type_name = {}
+        self.domain = {'s': [], 'o': []}
+        self.range = {'s': [], 'o': []}
+        self.type = {'s': [], 'o': []}
+    
+    def reset_graph(self):
         self.g = Graph(bind_namespaces="rdflib")
         soma = Namespace("http://www.ease-crc.org/ont/SOMA.owl#")
         dul = Namespace("http://www.ontologydesignpatterns.org/ont/dul/DUL.owl#")
@@ -47,8 +54,6 @@ class TriplesToSQL:
         known_ns = [OWL, RDF, RDFS, XSD, soma, dul, iolite, urdf, srdl2_cap, kitchen, pr2, iai_kitchen_knowledge, knowrob, iai_kitchen_objects, srdl2_comp]
         known_ns_names = ['owl', 'rdf', 'rdfs', 'xsd', 'soma', 'dul', 'iolite', 'urdf', 'srdl2_cap', 'kitchen', 'pr2', 'iai_kitchen_knowledge', 'knowrob', 'iai_kitchen_objects', 'srdl2_comp']
         self.ns = {knsname: kns for knsname, kns in zip(known_ns_names, known_ns)}
-        self.predicate_dict = {}
-        self.type_name = {}
 
     def xsd_2_mysql_type(self, property_name, o):
         for _, _, value in self.g.triples((property_name, RDFS.range, None)):
@@ -125,6 +130,7 @@ class TriplesToSQL:
         # print(len(self.ns))
     
     def mongo_triples_to_graph(self, collection):
+        self.reset_graph()
         py2xsd = {int: XSD.integer, float: XSD.float, str: XSD.string, bool: XSD.boolean, list: self.ns['soma'].array_double,
                   datetime: XSD.dateTime}
         for docs in collection.find():
@@ -152,15 +158,15 @@ class TriplesToSQL:
     def graph_to_dict(self, dump=False, graph=None):
         predicate_dict = {}
         g = self.g if graph is None else graph
-        for s, p, o in self.g:
-            p_n3 = p.n3(self.g.namespace_manager)
+        for s, p, o in g:
+            p_n3 = p.n3(g.namespace_manager)
             if p_n3 not in predicate_dict:
                 predicate_dict[p_n3] = {'s':[], 'o':[]}
-            s_n3 = s.n3(self.g.namespace_manager).strip('<>')
+            s_n3 = s.n3(g.namespace_manager).strip('<>')
             if "iai-kitchen.owl" in s_n3:
                 s_n3 = s_n3.replace("iai-kitchen.owl", "IAI-kitchen.owl")
             if '#' in s_n3 and 'http' in s_n3:
-                s_n3 =  URIRef(s_n3).n3(self.g.namespace_manager)
+                s_n3 =  URIRef(s_n3).n3(g.namespace_manager)
             s_n3 = s_n3.strip('<>')
             predicate_dict[p_n3]['s'].append(s_n3)
             new_o = self.ont_2_py(o, p)
@@ -169,31 +175,37 @@ class TriplesToSQL:
                     new_o = new_o.replace("iai-kitchen.owl", "IAI-kitchen.owl")
 
                 if '#' in new_o and 'http' in new_o:
-                    new_o = URIRef(new_o).n3(self.g.namespace_manager)
+                    new_o = URIRef(new_o).n3(g.namespace_manager)
                 new_o = new_o.strip('<>')
             elif type(new_o) in [URIRef, Literal]:
-                new_o = new_o.n3(self.g.namespace_manager)
+                new_o = new_o.n3(g.namespace_manager)
                 new_o = new_o.strip('<>')
             predicate_dict[p_n3]['o'].append(new_o)
 
         predicate_dict_cp = deepcopy(predicate_dict)
+        self.domain['s'].extend(predicate_dict_cp['rdfs:domain']['s'])
+        self.domain['o'].extend(predicate_dict_cp['rdfs:domain']['o'])
+        self.range['s'].extend(predicate_dict_cp['rdfs:range']['s'])
+        self.range['o'].extend(predicate_dict_cp['rdfs:range']['o'])
+        self.type['s'].extend(predicate_dict_cp['rdf:type']['s'])
+        self.type['o'].extend(predicate_dict_cp['rdf:type']['o'])
         new_predicate_dict = {}
         for p in predicate_dict_cp:
             d, r = 's', 'o'
             dtype = ''
-            if p in predicate_dict_cp['rdfs:domain']['s']:
-                d = predicate_dict_cp['rdfs:domain']['o'][predicate_dict_cp['rdfs:domain']['s'].index(p)]
+            if p in self.domain['s']:
+                d = self.domain['o'][self.domain['s'].index(p)]
                 self.type_name[d] = {}
                 d = re.sub(':|-', '_', d)
                 d += '_s'
                 self.type_name[d] = d
                 predicate_dict[p][d] = predicate_dict[p]['s']
                 del predicate_dict[p]['s']
-            if p in predicate_dict_cp['rdfs:range']['s']:
-                r = predicate_dict_cp['rdfs:range']['o'][predicate_dict_cp['rdfs:range']['s'].index(p)]
-                if r in predicate_dict_cp['rdf:type']['s']:
-                    idx = predicate_dict_cp['rdf:type']['s'].index(r)
-                    dtype = predicate_dict_cp['rdf:type']['o'][idx]
+            if p in self.range['s']:
+                r = self.range['o'][self.range['s'].index(p)]
+                if r in self.type['s']:
+                    idx = self.type['s'].index(r)
+                    dtype = self.type['o'][idx]
                 if dtype != 'rdfs:Datatype' and 'xsd' not in r:
                     self.type_name[r] = {}
                     r = re.sub(':|-', '_', r)

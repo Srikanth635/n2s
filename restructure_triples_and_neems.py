@@ -14,6 +14,7 @@ from sqlalchemy import text
 from copy import deepcopy
 from orderedset import OrderedSet
 from triples_to_sql import TriplesToSQL
+from tqdm import tqdm
 
 
 # mongo_to_python_conversions
@@ -65,7 +66,7 @@ def print_all_collection_types(collection):
     find_datatype(single_doc)
 
 class SQLCreator():
-    def __init__(self, value_mapping_func=None, allowed_missing_percentage=5, use_long_text=True) -> None:
+    def __init__(self, value_mapping_func=None, allowed_missing_percentage=5) -> None:
         self.not_always_there = []
         self.sql_table_creation_cmds = OrderedSet()
         self.data_to_insert = {}
@@ -78,16 +79,15 @@ class SQLCreator():
         self.value_mapping_func = value_mapping_func if value_mapping_func is not None else mon2py
         self.linked_table_names = OrderedSet()
         self.allowed_missing_percentage = allowed_missing_percentage
-        self.use_long_text = use_long_text
 
     def reset_data(self):
         self.sql_table_creation_cmds = OrderedSet()
         self.data_to_insert = {}
     
-    def insert_column_and_value(self, table_name, column_name, v, v_type, null_prev_rows=True):
+    def insert_column_and_value(self, table_name, column_name, v, v_type, null_prev_rows=True, use_long_text=True):
         key = table_name
         id = True if column_name in ['_id', 'neem_id'] else False
-        data_type = py2sql(v_type, id=id, use_long_text=self.use_long_text)
+        data_type = py2sql(v_type, id=id, use_long_text=use_long_text)
         if data_type is not None:
             null, unique = True, False
             if id:
@@ -175,7 +175,9 @@ class SQLCreator():
                 if ((1 - count/total_count) * 100) > self.allowed_missing_percentage:
                     self.not_always_there.append(key+'.'+k)  
 
-    def convert_to_sql(self, key, obj, parent_key=None, key_iri='', parent_key_iri='', parent_table_name='', parent_list=False):
+    def convert_to_sql(self, key, obj, parent_key=None,
+                        key_iri='', parent_key_iri='', parent_table_name='',
+                          parent_list=False, use_long_text=True):
         
         # This is the ID of the object/row in the sql table.
         ID = None
@@ -287,7 +289,7 @@ class SQLCreator():
                             self.add_fk(parent_table_name=table_name, table_name=k_table_name)
                 else:
                     # Values are inserted here for non nested columns (i.e. non iterable columns except for str)
-                    self.insert_column_and_value(table_name, k, v, v_type)
+                    self.insert_column_and_value(table_name, k, v, v_type, use_long_text=use_long_text)
 
             max_len = max([len(v) for k, v in self.data_to_insert[table_name].items()])
             for k, v in self.data_to_insert[table_name].items():
@@ -342,7 +344,10 @@ class SQLCreator():
                     k_table_name = key
 
                 if np.iterable(v) and type(v) != str:
-                    v, v_type, v_iterable, v_id = self.convert_to_sql(key, v, parent_key=parent_key, parent_key_iri=iri, parent_table_name=table_name, parent_list=True)
+                    v, v_type, v_iterable, v_id = self.convert_to_sql(key, v,
+                                                                       parent_key=parent_key, parent_key_iri=iri,
+                                                                       parent_table_name=table_name, parent_list=True,
+                                                                       use_long_text=use_long_text)
                 else:
                     v_type = type(v)
                     v_iterable = False
@@ -365,7 +370,7 @@ class SQLCreator():
 
                 else:
                     # Insertion
-                    self.insert_column_and_value(table_name, f'{key}_values', v, v_type)
+                    self.insert_column_and_value(table_name, f'{key}_values', v, v_type, use_long_text=use_long_text)
 
                 i += 1
         else:
@@ -403,6 +408,7 @@ class SQLCreator():
     
     def link_column_to_new_table(self, parent_table_name, type_name, instance_table_indicies, original_table_indicies):
         # Creation
+        new_table_name = parent_table_name+'_'+type_name
         table_string = f"CREATE TABLE IF NOT EXISTS {parent_table_name+'_'+type_name} (ID INT AUTO_INCREMENT NOT NULL PRIMARY KEY);"
         self.sql_table_creation_cmds.add(table_string)
         
@@ -417,6 +423,7 @@ class SQLCreator():
         self.data_to_insert[parent_table_name+'_'+type_name]['ID'] = ['NULL']*len(instance_table_indicies)
         self.data_to_insert[parent_table_name+'_'+type_name][parent_table_name+'_ID'] = instance_table_indicies
         self.data_to_insert[parent_table_name+'_'+type_name][type_name+'_ID'] = original_table_indicies
+        return new_table_name
 
     
     def reference_to_existing_table(self):
@@ -515,8 +522,8 @@ class SQLCreator():
                 key = re.sub("(\*)","_star", key)
             if '@' in key:
                 key = re.sub("(@)","_", key)
-            if 'range' in key:
-                key = re.sub("range","range_", key)
+            # if 'range' in key:
+            #     key = re.sub("range","range_", key)
             conn.execute(text(f"drop table if exists {key};"))
         conn.execute(text("SET FOREIGN_KEY_CHECKS=1;"))
 
@@ -557,16 +564,19 @@ def neem_collection_to_sql(name, collection, sql_creator=None, neem_id=None, all
                 if neem_id is not None:
                     doc["neem_id"] = deepcopy(neem_id)
                 all_docs_list.append(doc)
+            pbar = tqdm(total=len(all_docs_list)*2, desc="Creating SQL")
             start = time()
             for doc in all_docs_list:
                 meta_sql_creator.find_relationships(name, doc)
+                pbar.update(1)
             print("find_relationship_time = ", time() - start)
             meta_sql_creator.filter_null_tables()
             sql_creator.not_always_there.extend(meta_sql_creator.not_always_there)
             sql_creator.one_item_lists.extend(meta_sql_creator.one_item_lists)
             start = time()
-            for doc in all_docs_list:
+            for doc in tqdm(all_docs_list):
                 sql_creator.convert_to_sql(name, doc)
+                pbar.update(1)
             print("convert_to_sql_time = ", time() - start)
             done = True
         except errors.InvalidBSON:
@@ -609,16 +619,16 @@ def json_to_sql(top_table_name, json_data, sqlalachemy_engine, filter_doc=None, 
     print("number_of_json_documents = ", n_doc)
     sql_creator.upload_data_to_sql(drop_tables=drop_tables, sqlalchemy_engine=sqlalachemy_engine)
 
-def dict_to_sql(data, sql_creator=None, find_link_func=None, neem_id=None):
+def dict_to_sql(data, sql_creator=None, neem_id=None):
     if sql_creator is None:
-        sql_creator = SQLCreator(use_long_text=False)
+        sql_creator = SQLCreator()
     neem_id_val = mon2py(deepcopy(neem_id)) if neem_id is not None else None
     for key, docs in data.items():
         if '"' in key:
             key = re.sub('(\")',"", key)
         for doc in docs:
             doc['neem_id'] = neem_id_val
-            sql_creator.convert_to_sql(key, doc)
+            sql_creator.convert_to_sql(key, doc, use_long_text=False)
             sql_creator.add_fk('neems', key, 'neem_id', parent_col_name="_id")
 
 def link_predicate_tables(find_link_func, sql_creator):
@@ -626,16 +636,15 @@ def link_predicate_tables(find_link_func, sql_creator):
     for key, cols in data_to_insert_cp.items():
         if key == 'rdf_type':
             continue
-        # at_least_one_col_ok = False
         for i, (col_name, col_data) in enumerate(cols.items()):
-                all_ok = True
+                all_ok = False
                 prev_dtype = ''
                 indicies = []
                 had_int = False
                 for v_i, v in enumerate(col_data):
-                    if type(v) != str:
-                        had_int = True
-                        continue
+                    # if type(v) != str:
+                    #     had_int = True
+                    #     continue
                     idx, dtype = find_link_func(v, data_to_insert_cp)
                     if prev_dtype != '':
                         # all_ok = dtype == prev_dtype
@@ -648,16 +657,61 @@ def link_predicate_tables(find_link_func, sql_creator):
                     prev_dtype = dtype
                     indicies.append((v_i, idx))
                 if all_ok:
-                    # at_least_one_col_ok = True
                     sql_creator.link_column_to_exiting_table(key, col_name,'rdf_type', indicies)
-        # if not at_least_one_col_ok and neem_id_val is not None:
-        #     for _ in range(len(sql_creator.data_to_insert[key]['ID'])):
-        #         sql_creator.insert_column_and_value(key,
-        #                                             'neem_id',
-        #                                             neem_id_val,
-        #                                             v_type=type(neem_id_val),
-        #                                             null_prev_rows=False)
-        #     sql_creator.add_fk('neems', key, 'neem_id', parent_col_name="_id")
+
+def link_tf_and_triples(data:dict, sql_creator:SQLCreator):
+    time_start = np.array(sql_creator.data_to_insert['soma_hasIntervalBegin']['o'])
+    tsi = np.array(sql_creator.data_to_insert['soma_hasIntervalBegin']['dul_TimeInterval_s'])
+    tei = np.array(sql_creator.data_to_insert['soma_hasIntervalEnd']['dul_TimeInterval_s'])
+    time_end = np.array(sql_creator.data_to_insert['soma_hasIntervalEnd']['o'])
+    e_neem_id = np.array(sql_creator.data_to_insert['soma_hasIntervalEnd']['neem_id'])
+    s_neem_id = np.array(sql_creator.data_to_insert['soma_hasIntervalBegin']['neem_id'])
+    stamp = np.array(data['tf_header']['stamp'])
+    links = np.array(data['tf']['child_frame_id'])
+    stamp_neem_id = np.array(data['tf']['neem_id'])
+    e_idx_list = []
+    s_idx_list = []
+    stamp_idx = []
+    for e_idx, e in enumerate(time_end):
+        s_idx = np.argwhere(np.equal(tsi, tei[e_idx])).flatten()
+        if len(s_idx) > 1:
+            raise Exception("more than one start time for end time")
+        s_idx = s_idx[0]
+        s = time_start[s_idx]
+        cond1 = np.greater_equal(stamp, s)
+        cond2 = np.less(stamp, e)
+        cond3 = np.logical_and(np.equal(e_neem_id[e_idx], stamp_neem_id), np.equal(s_neem_id[s_idx], stamp_neem_id))
+        cond4 = True
+        res = np.argwhere(np.logical_and(np.logical_and(np.logical_and(cond1, cond2), cond3), cond4)).flatten()
+        res = res[np.argsort(stamp[res])]
+        encountered_links = []
+        new_res = OrderedSet()
+        for r in res:
+            if links[r] in encountered_links:
+                continue
+            else:
+                encountered_links.append(links[r])
+                new_res.add(r+1)
+        encountered_links = []
+        for r in reversed(res):
+            if links[r] in encountered_links:
+                continue
+            else:
+                encountered_links.append(links[r])
+                new_res.add(r+1)
+        new_res = list(new_res)
+        assert all([r-1 in res for r in new_res])
+        assert all([stamp[r-1] >= s and stamp[r-1] < e for r in new_res])
+        res = new_res
+        if len(res) > 0:
+            stamp_idx.extend(res)
+            e_idx_list.extend([e_idx+1]*len(res))
+            s_idx_list.extend([s_idx+1]*len(res))
+    new_table_name = sql_creator.link_column_to_new_table('tf_header', 'soma_hasIntervalBegin', stamp_idx, s_idx_list)
+    sql_creator.add_fk_column('soma_hasIntervalEnd', new_table_name, 'soma_hasIntervalEnd_ID')
+    sql_creator.data_to_insert[new_table_name]['soma_hasIntervalEnd_ID'] = e_idx_list
+    
+
 
 if __name__ == "__main__":
 
@@ -721,17 +775,17 @@ if __name__ == "__main__":
     engine = create_engine(sql_url)
 
     sql_creator.upload_data_to_sql(sqlalchemy_engine=engine)
-    sql_creator = SQLCreator(use_long_text=False)
-    all_triples = []
+    data = sql_creator.data_to_insert
+    sql_creator = SQLCreator()
+    t2sql = TriplesToSQL()
     for id in neem_ids:
-        t2sql = TriplesToSQL()
         triples = db.get_collection(str(id) + '_triples')
         t2sql.mongo_triples_to_graph(triples)
         predicate_dict = t2sql.graph_to_dict()
         dict_to_sql(predicate_dict,
                 sql_creator=sql_creator,
-                find_link_func=t2sql.find_link_in_graph_dict,
                 neem_id=id)
     link_predicate_tables(t2sql.find_link_in_graph_dict, sql_creator)
+    link_tf_and_triples(data, sql_creator)
     sql_creator.upload_data_to_sql(sqlalchemy_engine=engine)
     client.close()
