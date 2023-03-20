@@ -15,6 +15,7 @@ from copy import deepcopy
 from orderedset import OrderedSet
 from triples_to_sql import TriplesToSQL
 from tqdm import tqdm
+import argparse
 
 
 # mongo_to_python_conversions
@@ -84,6 +85,10 @@ class SQLCreator():
         self.sql_table_creation_cmds = OrderedSet()
         self.data_to_insert = {}
     
+    def merge_with(self, sql_creator):
+        self.sql_table_creation_cmds.update(sql_creator.sql_table_creation_cmds)
+        self.data_to_insert.update(sql_creator.data_to_insert)
+    
     def insert_column_and_value(self, table_name, column_name, v, v_type, null_prev_rows=True, use_long_text=True):
         key = table_name
         id = True if column_name in ['_id', 'neem_id'] else False
@@ -92,7 +97,7 @@ class SQLCreator():
             null, unique = True, False
             if id:
                 null = False
-                if column_name == '_id':
+                if column_name == '_id' and key == 'neems':
                     unique = True
             self.add_col(key, column_name, data_type, NULL=null, UNIQUE=unique)
         
@@ -177,7 +182,7 @@ class SQLCreator():
 
     def convert_to_sql(self, key, obj, parent_key=None,
                         key_iri='', parent_key_iri='', parent_table_name='',
-                          parent_list=False, use_long_text=True):
+                          parent_list=False, use_long_text=True, verbose=False):
         
         # This is the ID of the object/row in the sql table.
         ID = None
@@ -258,7 +263,8 @@ class SQLCreator():
                     return obj, type(obj), np.iterable(obj) and type(obj) != str, ID
                 else:
                     ID = len(rows_list) + 1
-                print("Time to check if all values exist: ", time()-start)
+                if verbose:
+                    print("Time to check if all values exist: ", time()-start)
             elif ID is None:
                 ID = len(self.data_to_insert[table_name]['ID']) + 1
 
@@ -490,7 +496,7 @@ class SQLCreator():
                 sql_insert_commands.append(f"INSERT INTO {key} {cols_str} VALUES {all_rows_str};")
         return sql_insert_commands
 
-    def upload_data_to_sql(self, sqlalchemy_engine, drop_tables=True):
+    def upload_data_to_sql(self, sqlalchemy_engine, drop_tables=True, verbose=False):
 
         # Create a connection
         conn = sqlalchemy_engine.connect()
@@ -498,19 +504,24 @@ class SQLCreator():
         # Get the inertion cmds
         insertion_time_s = time()
         sql_insert_cmds = self.get_insert_rows_commands()
-        print("Insertion Time = ", time() - insertion_time_s)
+        if verbose:
+            print("Insertion Time = ", time() - insertion_time_s)
 
         if drop_tables:
             self._drop_tables(self.data_to_insert, conn)
 
         # Create tables
-        self._execute_cmds(self.sql_table_creation_cmds, conn)
-        
+        pbar = tqdm(total=len(self.sql_table_creation_cmds),desc="Executing Schema Creation Commands",colour='#FFA500')
+        self._execute_cmds(self.sql_table_creation_cmds, conn, pbar=pbar)
+        pbar.close()
+
         # Insert data
+        pbar = tqdm(total=len(sql_insert_cmds), desc="Executing Insertion Commands",colour='#FFA500')
         conn.execute(text("SET FOREIGN_KEY_CHECKS=0;"))
-        self._execute_cmds(sql_insert_cmds, conn)
+        self._execute_cmds(sql_insert_cmds, conn, pbar=pbar)
         conn.execute(text("SET FOREIGN_KEY_CHECKS=1;"))
         conn.commit()
+        pbar.close()
         
         # Close the connection
         conn.close()
@@ -527,7 +538,7 @@ class SQLCreator():
             conn.execute(text(f"drop table if exists {key};"))
         conn.execute(text("SET FOREIGN_KEY_CHECKS=1;"))
 
-    def _execute_cmds(self, sql_cmds, conn):
+    def _execute_cmds(self, sql_cmds, conn, pbar=None):
         for cmd in sql_cmds:
             if '*' in cmd:
                 cmd = re.sub("(\*)","_star", cmd)
@@ -540,57 +551,45 @@ class SQLCreator():
         
             # # To commit the changes
             conn.commit()
+            if pbar is not None:
+                pbar.update(1)
     
 
 
-def neem_collection_to_sql(name, collection, sql_creator=None, neem_id=None, allowed_missing_percentage=5):
-    single_doc = collection.find_one({})
-    if single_doc is None:
-        print(f"NO DOCUMENTS FOUND FOR {name} with neem_id {str(neem_id)}")
+def neem_collection_to_sql(name, collection:list, sql_creator=None, neem_id=None, pbar=None, verbose=False):
+    if len(collection) == 0:
+        if verbose:
+            print(f"NO DOCUMENTS FOUND FOR {name} with neem_id {str(neem_id)}")
         return []
-    all_docs = collection.find({}, cursor_type=CursorType.EXHAUST)
     if sql_creator is None:
         sql_creator = SQLCreator()
     meta_sql_creator = SQLCreator()
-    n_doc = 0
-    done = False
-    last_doc_id = None
-    while not done:
-        try:
-            all_docs_list = []
-            for doc in all_docs:
-                last_doc_id = doc['_id']
-                n_doc += 1
-                if neem_id is not None:
-                    doc["neem_id"] = deepcopy(neem_id)
-                all_docs_list.append(doc)
-            pbar = tqdm(total=len(all_docs_list)*2, desc="Creating SQL")
-            start = time()
-            for doc in all_docs_list:
-                meta_sql_creator.find_relationships(name, doc)
-                pbar.update(1)
-            print("find_relationship_time = ", time() - start)
-            meta_sql_creator.filter_null_tables()
-            sql_creator.not_always_there.extend(meta_sql_creator.not_always_there)
-            sql_creator.one_item_lists.extend(meta_sql_creator.one_item_lists)
-            start = time()
-            for doc in tqdm(all_docs_list):
-                sql_creator.convert_to_sql(name, doc)
-                pbar.update(1)
-            print("convert_to_sql_time = ", time() - start)
-            done = True
-        except errors.InvalidBSON:
-            doc = None
-            print(f"BSON Error at doc with ID {last_doc_id} for {name} with neem_id {neem_id}")
-            all_docs = db.get_collection(str(neem_id) + "_" + name).find({"_id":{"$gt":last_doc_id}}, cursor_type=CursorType.EXHAUST)
+
+    if neem_id is not None:
+        [doc.update({"neem_id":deepcopy(neem_id)}) for doc in collection]
+
+    start = time()
+    for doc in collection:
+        meta_sql_creator.find_relationships(name, doc)
+    meta_sql_creator.filter_null_tables()
+    sql_creator.not_always_there.extend(meta_sql_creator.not_always_there)
+    sql_creator.one_item_lists.extend(meta_sql_creator.one_item_lists)
+    if verbose:
+        print("find_relationships_time = ", time() - start)
+
+    start = time()
+    for doc in collection:
+        sql_creator.convert_to_sql(name, doc)
+        if pbar is not None:
+            [pb.update(1) for pb in pbar]
+    if verbose:
+        print("convert_to_sql_time = ", time() - start)
+
     if neem_id is not None:
         sql_creator.add_fk("neems", name, "neem_id", parent_col_name="_id")
-    sql_table_creation_cmds = sql_creator.sql_table_creation_cmds
-    data_to_insert = sql_creator.data_to_insert
-    print(n_doc)
-    return sql_table_creation_cmds, data_to_insert
 
-def json_to_sql(top_table_name, json_data, sqlalachemy_engine, filter_doc=None, drop_tables=True, value_mapping_func=None):
+
+def json_to_sql(top_table_name, json_data, sqlalachemy_engine, filter_doc=None, drop_tables=True, value_mapping_func=None, pbar=None, verbose=False):
     n_doc = 0
     sql_creator = SQLCreator(value_mapping_func=value_mapping_func)
     funcs = [sql_creator.find_relationships, sql_creator.convert_to_sql]
@@ -609,17 +608,20 @@ def json_to_sql(top_table_name, json_data, sqlalachemy_engine, filter_doc=None, 
                 if np.iterable(name) and not isinstance(name, str):
                     for n in name:
                         func(n, doc)
+                        pbar.update(1)
                         n_doc += 1
                     continue
             func(name, doc)
+            pbar.update(1)
             n_doc += 1
         if f_i == 0:
             sql_creator.filter_null_tables()
     sql_creator.reference_to_existing_table()
-    print("number_of_json_documents = ", n_doc)
-    sql_creator.upload_data_to_sql(drop_tables=drop_tables, sqlalchemy_engine=sqlalachemy_engine)
+    if verbose:
+        print("number_of_json_documents = ", n_doc)
+    sql_creator.upload_data_to_sql(drop_tables=drop_tables, sqlalchemy_engine=sqlalachemy_engine, pbar=pbar)
 
-def dict_to_sql(data, sql_creator=None, neem_id=None):
+def dict_to_sql(data, sql_creator=None, neem_id=None, use_long_text=False, pbar=None, verbose=False):
     if sql_creator is None:
         sql_creator = SQLCreator()
     neem_id_val = mon2py(deepcopy(neem_id)) if neem_id is not None else None
@@ -628,8 +630,10 @@ def dict_to_sql(data, sql_creator=None, neem_id=None):
             key = re.sub('(\")',"", key)
         for doc in docs:
             doc['neem_id'] = neem_id_val
-            sql_creator.convert_to_sql(key, doc, use_long_text=False)
+            sql_creator.convert_to_sql(key, doc, use_long_text=use_long_text)
             sql_creator.add_fk('neems', key, 'neem_id', parent_col_name="_id")
+            if pbar is not None:
+                [pb.update(1) for pb in pbar]
 
 def link_predicate_tables(find_link_func, sql_creator):
     data_to_insert_cp = deepcopy(sql_creator.data_to_insert)
@@ -642,13 +646,7 @@ def link_predicate_tables(find_link_func, sql_creator):
                 indicies = []
                 had_int = False
                 for v_i, v in enumerate(col_data):
-                    # if type(v) != str:
-                    #     had_int = True
-                    #     continue
                     idx, dtype = find_link_func(v, data_to_insert_cp)
-                    if prev_dtype != '':
-                        # all_ok = dtype == prev_dtype
-                        pass
                     all_ok = dtype != None
                     if not all_ok and col_name != 'ID' and had_int:
                         print(f"not all ok for {key} {col_name} {v} {dtype} {prev_dtype}")
@@ -673,53 +671,64 @@ def link_tf_and_triples(data:dict, sql_creator:SQLCreator):
     s_idx_list = []
     stamp_idx = []
     for e_idx, e in enumerate(time_end):
-        s_idx = np.argwhere(np.equal(tsi, tei[e_idx])).flatten()
-        if len(s_idx) > 1:
-            raise Exception("more than one start time for end time")
-        s_idx = s_idx[0]
-        s = time_start[s_idx]
-        cond1 = np.greater_equal(stamp, s)
-        cond2 = np.less(stamp, e)
-        cond3 = np.logical_and(np.equal(e_neem_id[e_idx], stamp_neem_id), np.equal(s_neem_id[s_idx], stamp_neem_id))
-        cond4 = True
-        res = np.argwhere(np.logical_and(np.logical_and(np.logical_and(cond1, cond2), cond3), cond4)).flatten()
-        res = res[np.argsort(stamp[res])]
-        encountered_links = []
-        new_res = OrderedSet()
-        for r in res:
-            if links[r] in encountered_links:
-                continue
-            else:
-                encountered_links.append(links[r])
-                new_res.add(r+1)
-        encountered_links = []
-        for r in reversed(res):
-            if links[r] in encountered_links:
-                continue
-            else:
-                encountered_links.append(links[r])
-                new_res.add(r+1)
-        new_res = list(new_res)
-        assert all([r-1 in res for r in new_res])
-        assert all([stamp[r-1] >= s and stamp[r-1] < e for r in new_res])
-        res = new_res
-        if len(res) > 0:
-            stamp_idx.extend(res)
-            e_idx_list.extend([e_idx+1]*len(res))
-            s_idx_list.extend([s_idx+1]*len(res))
+        neem_id_cond = np.equal(s_neem_id, e_neem_id[e_idx])
+        time_interval_cond = np.equal(tsi, tei[e_idx])
+        s_idicies = np.argwhere(np.logical_and(time_interval_cond,neem_id_cond)).flatten()
+        # if len(s_idx) > 1:
+            # raise Exception(f"more than one start time for end time\n{e_idx}\n{e}\n{s_idx}\n{time_start[s_idx]}\n{time_end[e_idx]}\n{e_neem_id[e_idx]}\n{s_neem_id[s_idx]}\n{tsi[s_idx]}\n{tei[e_idx]}")
+        for s_idx in s_idicies:
+            s = time_start[s_idx]
+            cond1 = np.greater_equal(stamp, s)
+            cond2 = np.less(stamp, e)
+            cond3 = np.logical_and(np.equal(e_neem_id[e_idx], stamp_neem_id), np.equal(s_neem_id[s_idx], stamp_neem_id))
+            cond4 = True
+            res = np.argwhere(np.logical_and(np.logical_and(np.logical_and(cond1, cond2), cond3), cond4)).flatten()
+            res = res[np.argsort(stamp[res])]
+            np.unique(res, return_index=True)
+            encountered_links = []
+            new_res = OrderedSet()
+            for r in res:
+                if links[r] in encountered_links:
+                    continue
+                else:
+                    encountered_links.append(links[r])
+                    new_res.add(r+1)
+            encountered_links = []
+            for r in reversed(res):
+                if links[r] in encountered_links:
+                    continue
+                else:
+                    encountered_links.append(links[r])
+                    new_res.add(r+1)
+            new_res = list(new_res)
+            assert all([r-1 in res for r in new_res])
+            assert all([stamp[r-1] >= s and stamp[r-1] < e for r in new_res])
+            res = new_res
+            if len(res) > 0:
+                stamp_idx.extend(res)
+                e_idx_list.extend([e_idx+1]*len(res))
+                s_idx_list.extend([s_idx+1]*len(res))
     new_table_name = sql_creator.link_column_to_new_table('tf_header', 'soma_hasIntervalBegin', stamp_idx, s_idx_list)
     sql_creator.add_fk_column('soma_hasIntervalEnd', new_table_name, 'soma_hasIntervalEnd_ID')
     sql_creator.data_to_insert[new_table_name]['soma_hasIntervalEnd_ID'] = e_idx_list
+
+def mongo_collection_to_list_of_dicts(collection):
+    return [doc for doc in collection.find({})]
     
 
 
 if __name__ == "__main__":
 
+    # Parse command line arguments
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--verbose', '-v', action='store_true')
+    args = parser.parse_args()
+    verbose = args.verbose
+
     # Replace the uri string with your MongoDB deployment's connection string.
     MONGODB_URI = os.environ["LOCAL_MONGODB_URI"]
     # set a 5-second connection timeout
     client = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=5000, unicode_decode_error_handler='ignore')
-
     try:
         client.server_info()
         # print(client.server_info())
@@ -728,64 +737,83 @@ if __name__ == "__main__":
 
     db = client.neems
     sql_creator = SQLCreator()
-    all_collections_data_to_insert = {}
-    all_collections_creation_cmds = []
+    predicate_sql_creator = SQLCreator()
+    t2sql = TriplesToSQL()
+
+
+    # Adding meta data
     meta = db.meta
+    meta_lod = mongo_collection_to_list_of_dicts(meta)
     neem_collection_to_sql("neems",
-                      meta,
-                      sql_creator=sql_creator)
+                      meta_lod,
+                      sql_creator=sql_creator, verbose=verbose)
+    meta_lod = list(reversed(meta_lod))
+    batch_sz = 5
+    meta_lod_batches = [meta_lod[i:i + batch_sz] for i in range(0, len(meta_lod), batch_sz)]
+    coll_names = ['tf', 'triples', 'annotations', 'inferred']
 
-    cursor = db.meta.find({},cursor_type=CursorType.EXHAUST)
-    all_neems = {}
-    neem_ids = []
-    n_doc = 0
-    creation_time_s = time()
-    for doc in cursor:
+    for batch_idx, batch in enumerate(meta_lod_batches):
 
-        n_doc += 1
-        print(doc)
-        id = str(doc['_id'])
-        neem_ids.append(doc['_id'])
+        req_docs = batch_sz
+        all_docs = 0
+        creation_time_s = time()
+        collections = {}
+        meta_data = tqdm(total=batch_sz*4, desc=f"Collecting Meta Data (batch {batch_idx})", colour='#FFA500')
 
-        tf = db.get_collection(id + '_tf')
-        neem_collection_to_sql("tf",
-                               tf,
-                               sql_creator=sql_creator,
-                               neem_id=doc['_id'])
+        for d_i, doc in enumerate(batch):
+
+            id = str(doc['_id'])
+            for cname in coll_names:
+                coll = db.get_collection(id + '_' + cname)
+                lod = mongo_collection_to_list_of_dicts(coll)
+                if cname in ['annotations', 'triples']:
+                    t2sql.mongo_triples_to_graph(lod)
+                    lod = t2sql.graph_to_dict()
+                    all_docs += sum([len(v) for v in lod.values()])
+                else:
+                    all_docs += len(lod)
+                collections[id+'_'+cname] = {'name':cname,'data':lod}
+                meta_data.update(1)
+
+        meta_data.close()
         
-        annotations = db.get_collection(id + '_annotations')
-        neem_collection_to_sql("annotations",
-                          annotations,
-                          sql_creator=sql_creator,
-                          neem_id=doc['_id'])
+        # all_neems_pbar = tqdm(total=all_docs, desc="Generating SQL Commands", colour='#FFA500')
+
+        for d_i, doc in enumerate(batch):
+            for coll_i, (cname, coll) in enumerate(collections.items()):
+                if len(coll['data']) == 0:
+                    continue
+                neem_pbar = tqdm(total=len(coll['data']), desc=cname, colour='#FFA500', leave=True)
+                if coll['name'] not in ['annotations', 'triples']:
+                    neem_collection_to_sql(coll['name'],
+                                        coll['data'],
+                                        sql_creator=sql_creator,
+                                        neem_id=doc['_id'], pbar=[neem_pbar], verbose=verbose)
+            
+                else:
+                    use_long_text = True #if coll['name'] == 'annotations' else False
+                    dict_to_sql(coll['data'],
+                            sql_creator=predicate_sql_creator,
+                            neem_id=doc['_id'], use_long_text=use_long_text, pbar=[neem_pbar], verbose=verbose)
+                neem_pbar.close()
+
+        # all_neems_pbar.close()
         
-        inferred = db.get_collection(id + '_inferred')
-        neem_collection_to_sql("inferred",
-                          inferred,
-                          sql_creator=sql_creator,
-                          neem_id=doc['_id'])
-        if n_doc >= 2:
+        if verbose:
+            print("Creation Time = ", time() - creation_time_s)
+        
+        if batch_idx == 0:
             break
 
-    print("Creation Time = ", time() - creation_time_s)
-    print("number of docs = {}".format(n_doc))
-     
+    client.close()
+
     # create tables and upload data to the sql database
     sql_url = os.environ["LOCAL_SQL_URL"]
     engine = create_engine(sql_url)
 
+    data = sql_creator.data_to_insert        
+    link_predicate_tables(t2sql.find_link_in_graph_dict, predicate_sql_creator)
+    link_tf_and_triples(data, predicate_sql_creator)
+
+    sql_creator.merge_with(predicate_sql_creator)
     sql_creator.upload_data_to_sql(sqlalchemy_engine=engine)
-    data = sql_creator.data_to_insert
-    sql_creator = SQLCreator()
-    t2sql = TriplesToSQL()
-    for id in neem_ids:
-        triples = db.get_collection(str(id) + '_triples')
-        t2sql.mongo_triples_to_graph(triples)
-        predicate_dict = t2sql.graph_to_dict()
-        dict_to_sql(predicate_dict,
-                sql_creator=sql_creator,
-                neem_id=id)
-    link_predicate_tables(t2sql.find_link_in_graph_dict, sql_creator)
-    link_tf_and_triples(data, sql_creator)
-    sql_creator.upload_data_to_sql(sqlalchemy_engine=engine)
-    client.close()

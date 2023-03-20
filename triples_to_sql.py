@@ -24,7 +24,7 @@ class TriplesToSQL:
         self.type = {'s': [], 'o': []}
     
     def reset_graph(self):
-        self.g = Graph(bind_namespaces="rdflib")
+        self.g = Graph(bind_namespaces="rdflib")  
         soma = Namespace("http://www.ease-crc.org/ont/SOMA.owl#")
         dul = Namespace("http://www.ontologydesignpatterns.org/ont/dul/DUL.owl#")
         iolite = Namespace("http://www.ontologydesignpatterns.org/ont/dul/IOLite.owl#")
@@ -36,24 +36,15 @@ class TriplesToSQL:
         iai_kitchen_knowledge = Namespace("http://knowrob.org/kb/iai-kitchen-knowledge.owl#")
         knowrob = Namespace("http://knowrob.org/kb/knowrob.owl#")
         iai_kitchen_objects = Namespace("http://knowrob.org/kb/iai-kitchen-objects.owl#")
-        self.g.bind("soma", soma)
-        self.g.bind("owl", OWL)
-        self.g.bind("rdf", RDF)
-        self.g.bind("rdfs", RDFS)
-        self.g.bind("xsd", XSD)
-        self.g.bind("dul", dul)
-        self.g.bind("iolite", iolite)
-        self.g.bind("urdf", urdf)
-        self.g.bind("srdl2-cap", srdl2_cap)
-        self.g.bind("kitchen", kitchen)
-        self.g.bind("pr2", pr2)
-        self.g.bind("iai-kitchen-knowledge", iai_kitchen_knowledge)
-        self.g.bind("knowrob", knowrob)
-        self.g.bind("iai-kitchen-objects", iai_kitchen_objects)
-        self.g.bind("srdl2-comp", srdl2_comp)
-        known_ns = [OWL, RDF, RDFS, XSD, soma, dul, iolite, urdf, srdl2_cap, kitchen, pr2, iai_kitchen_knowledge, knowrob, iai_kitchen_objects, srdl2_comp]
-        known_ns_names = ['owl', 'rdf', 'rdfs', 'xsd', 'soma', 'dul', 'iolite', 'urdf', 'srdl2_cap', 'kitchen', 'pr2', 'iai_kitchen_knowledge', 'knowrob', 'iai_kitchen_objects', 'srdl2_comp']
+        dcmi = Namespace("http://purl.org/dc/elements/1.1#")
+        known_ns = [OWL, RDF, RDFS, XSD, soma, dul, iolite, urdf, srdl2_cap, kitchen, pr2,
+                     iai_kitchen_knowledge, knowrob, iai_kitchen_objects, srdl2_comp, dcmi]
+        known_ns_names = ['owl', 'rdf', 'rdfs', 'xsd', 'soma', 'dul', 'iolite', 'urdf', 'srdl2_cap', 'kitchen', 'pr2',
+                           'iai_kitchen_knowledge', 'knowrob', 'iai_kitchen_objects', 'srdl2_comp', 'dcmi']
         self.ns = {knsname: kns for knsname, kns in zip(known_ns_names, known_ns)}
+        self.ns_str = {knsname: str(kns) for knsname, kns in zip(known_ns_names, known_ns)}
+        for knsname, kns in zip(known_ns_names, known_ns):
+            self.g.bind(knsname, kns)
 
     def xsd_2_mysql_type(self, property_name, o):
         for _, _, value in self.g.triples((property_name, RDFS.range, None)):
@@ -98,7 +89,9 @@ class TriplesToSQL:
                 o = Literal(o, datatype=value)
                 v = o.value
             elif value == self.ns['soma'].array_double:
-                v = list(map(float, str(o).strip('[]').split(' ')))
+                str_v = str(o).strip('[]')
+                sep = ' ' if ' ' in str_v else ','
+                v = list(map(float, str_v.split(sep)))
             else:
                 v = str(o)
             return v
@@ -133,8 +126,13 @@ class TriplesToSQL:
         self.reset_graph()
         py2xsd = {int: XSD.integer, float: XSD.float, str: XSD.string, bool: XSD.boolean, list: self.ns['soma'].array_double,
                   datetime: XSD.dateTime}
-        for docs in collection.find():
-            v = [docs['s'], docs['p'], docs['o']]
+        for docs in collection:
+            if 'o' not in docs and 'v' in docs:
+                v = [docs['s'], docs['p'], docs['v']]
+            elif 'o' in docs and 'v' not in docs:
+                v = [docs['s'], docs['p'], docs['o']]
+            else:
+                raise ValueError('Missing Object value in triple')
             new_v = [0, 0, 0]
             for i in range(3):
                 if not isinstance(v[i], str):
@@ -144,12 +142,19 @@ class TriplesToSQL:
                     # if not type(v[i]) == float:
                     #     print('not str', v[i])
                     continue
-                if 'http' in v[i] and '#' in v[i]:
+                # if 'hasJointPositionMin' in v[i] or 'hasJointPositionMax' in v[i]:
+                #     print(v[i])
+                if 'http://purl.org/dc/elements/1.1/' in v[i]:
+                    v[i] = v[i].replace('http://purl.org/dc/elements/1.1/', 'http://purl.org/dc/elements/1.1#')
+                if v[i].startswith('http') and '#' in v[i]:
                     ns_name = v[i].split('#')[0].split('/')[-1].split('.owl')[0]
                     ns_iri = v[i].split('#')[0]+'#'
-                    if ns_iri not in self.ns.values():
-                        self.ns[ns_name] = Namespace(v[i].split('#')[0]+'#')         
-                new_v[i] = URIRef(v[i].strip('<>')) if '#' in v[i] else Literal(v[i].strip('<>'))
+                    if ns_iri not in self.ns_str.values():
+                        self.ns[ns_name] = Namespace(v[i].split('#')[0]+'#')
+                        self.ns_str[ns_name] = v[i].split('#')[0]+'#'
+                        self.g.bind(ns_name, self.ns[ns_name])
+                v[i] = v[i].strip('<>')
+                new_v[i] = URIRef(v[i].strip('<>')) if '#' in v[i] and v[i].startswith('http://') else Literal(v[i].strip('<>'))
             self.g.add((new_v[0], new_v[1], new_v[2]))
             # break
         # print(json.dumps(self.ns, indent=4))
@@ -165,7 +170,7 @@ class TriplesToSQL:
             s_n3 = s.n3(g.namespace_manager).strip('<>')
             if "iai-kitchen.owl" in s_n3:
                 s_n3 = s_n3.replace("iai-kitchen.owl", "IAI-kitchen.owl")
-            if '#' in s_n3 and 'http' in s_n3:
+            if '#' in s_n3 and s_n3.startswith('http'):
                 s_n3 =  URIRef(s_n3).n3(g.namespace_manager)
             s_n3 = s_n3.strip('<>')
             predicate_dict[p_n3]['s'].append(s_n3)
@@ -174,7 +179,7 @@ class TriplesToSQL:
                 if "iai-kitchen.owl" in new_o:
                     new_o = new_o.replace("iai-kitchen.owl", "IAI-kitchen.owl")
 
-                if '#' in new_o and 'http' in new_o:
+                if '#' in new_o and new_o.startswith('http'):
                     new_o = URIRef(new_o).n3(g.namespace_manager)
                 new_o = new_o.strip('<>')
             elif type(new_o) in [URIRef, Literal]:
@@ -183,12 +188,13 @@ class TriplesToSQL:
             predicate_dict[p_n3]['o'].append(new_o)
 
         predicate_dict_cp = deepcopy(predicate_dict)
-        self.domain['s'].extend(predicate_dict_cp['rdfs:domain']['s'])
-        self.domain['o'].extend(predicate_dict_cp['rdfs:domain']['o'])
-        self.range['s'].extend(predicate_dict_cp['rdfs:range']['s'])
-        self.range['o'].extend(predicate_dict_cp['rdfs:range']['o'])
-        self.type['s'].extend(predicate_dict_cp['rdf:type']['s'])
-        self.type['o'].extend(predicate_dict_cp['rdf:type']['o'])
+        if 'rdfs:domain' in predicate_dict_cp:
+            self.domain['s'].extend(predicate_dict_cp['rdfs:domain']['s'])
+            self.domain['o'].extend(predicate_dict_cp['rdfs:domain']['o'])
+            self.range['s'].extend(predicate_dict_cp['rdfs:range']['s'])
+            self.range['o'].extend(predicate_dict_cp['rdfs:range']['o'])
+            self.type['s'].extend(predicate_dict_cp['rdf:type']['s'])
+            self.type['o'].extend(predicate_dict_cp['rdf:type']['o'])
         new_predicate_dict = {}
         for p in predicate_dict_cp:
             d, r = 's', 'o'
