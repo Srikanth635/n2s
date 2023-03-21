@@ -772,38 +772,37 @@ if __name__ == "__main__":
                     all_docs += sum([len(v) for v in lod.values()])
                 else:
                     all_docs += len(lod)
-                collections[id+'_'+cname] = {'name':cname,'data':lod}
+                collections[id+'_'+cname] = {'name':cname,'data':lod, 'id':doc['_id']}
                 meta_data.update(1)
 
         meta_data.close()
         
-        # all_neems_pbar = tqdm(total=all_docs, desc="Generating SQL Commands", colour='#FFA500')
+        all_neems_pbar = tqdm(total=all_docs, desc="Generating SQL Commands", colour='#FFA500')
 
-        for d_i, doc in enumerate(batch):
-            for coll_i, (cname, coll) in enumerate(collections.items()):
-                if len(coll['data']) == 0:
-                    continue
-                neem_pbar = tqdm(total=len(coll['data']), desc=cname, colour='#FFA500', leave=True)
-                if coll['name'] not in ['annotations', 'triples']:
-                    neem_collection_to_sql(coll['name'],
-                                        coll['data'],
-                                        sql_creator=sql_creator,
-                                        neem_id=doc['_id'], pbar=[neem_pbar], verbose=verbose)
-            
-                else:
-                    use_long_text = True #if coll['name'] == 'annotations' else False
-                    dict_to_sql(coll['data'],
-                            sql_creator=predicate_sql_creator,
-                            neem_id=doc['_id'], use_long_text=use_long_text, pbar=[neem_pbar], verbose=verbose)
-                neem_pbar.close()
+        for coll_i, (cname, coll) in enumerate(collections.items()):
+            if len(coll['data']) == 0:
+                continue
+            neem_pbar = tqdm(total=len(coll['data']), desc=cname, colour='#FFA500', leave=False)
+            if coll['name'] not in ['annotations', 'triples']:
+                neem_collection_to_sql(coll['name'],
+                                    coll['data'],
+                                    sql_creator=sql_creator,
+                                    neem_id=doc['_id'], pbar=[neem_pbar, all_neems_pbar], verbose=verbose)
+        
+            else:
+                use_long_text = True #if coll['name'] == 'annotations' else False
+                dict_to_sql(coll['data'],
+                        sql_creator=predicate_sql_creator,
+                        neem_id=doc['_id'], use_long_text=use_long_text, pbar=[neem_pbar, all_neems_pbar], verbose=verbose)
+            neem_pbar.close()
 
-        # all_neems_pbar.close()
+        all_neems_pbar.close()
         
         if verbose:
             print("Creation Time = ", time() - creation_time_s)
         
-        if batch_idx == 0:
-            break
+        # if batch_idx == 0:
+        #     break
 
     client.close()
 

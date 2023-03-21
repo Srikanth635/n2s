@@ -1,6 +1,6 @@
 import os
 from sqlalchemy import create_engine, text
-from rdflib import Graph, URIRef, RDF, RDFS, OWL, Literal, Namespace, XSD
+from rdflib import Graph, URIRef, RDF, RDFS, OWL, Literal, Namespace, XSD, term
 import json
 from sqlalchemy import create_engine
 import re
@@ -15,16 +15,13 @@ from bson.decimal128 import Decimal128
 class TriplesToSQL:
     def __init__(self) -> None:   
         self.data_types = {'types': [], 'values': []}
-        self.reset_graph()
         self.all_property_types = {}
         self.predicate_dict = {}
         self.type_name = {}
         self.domain = {'s': [], 'o': []}
         self.range = {'s': [], 'o': []}
         self.type = {'s': [], 'o': []}
-    
-    def reset_graph(self):
-        self.g = Graph(bind_namespaces="rdflib")  
+
         soma = Namespace("http://www.ease-crc.org/ont/SOMA.owl#")
         dul = Namespace("http://www.ontologydesignpatterns.org/ont/dul/DUL.owl#")
         iolite = Namespace("http://www.ontologydesignpatterns.org/ont/dul/IOLite.owl#")
@@ -43,7 +40,14 @@ class TriplesToSQL:
                            'iai_kitchen_knowledge', 'knowrob', 'iai_kitchen_objects', 'srdl2_comp', 'dcmi']
         self.ns = {knsname: kns for knsname, kns in zip(known_ns_names, known_ns)}
         self.ns_str = {knsname: str(kns) for knsname, kns in zip(known_ns_names, known_ns)}
-        for knsname, kns in zip(known_ns_names, known_ns):
+        self.reset_graph()
+        self.xsd2py = {XSD.integer: int, XSD.float: float, XSD.double: float, XSD.boolean: bool, XSD.dateTime: datetime,
+                       XSD.positiveInteger: int, XSD.date: datetime, XSD.time: datetime, XSD.string: str,
+                       XSD.anyURI: str, XSD.decimal: Decimal128, XSD.nonNegativeInteger: int, XSD.long: int}
+    
+    def reset_graph(self):
+        self.g = Graph(bind_namespaces="rdflib")  
+        for knsname, kns in self.ns.items():
             self.g.bind(knsname, kns)
 
     def xsd_2_mysql_type(self, property_name, o):
@@ -86,7 +90,9 @@ class TriplesToSQL:
             if property_name not in self.all_property_types:
                 self.all_property_types[property_name] = value
             if str(XSD) in str(value):
-                o = Literal(o, datatype=value)
+                if isinstance(o, Literal):
+                    o = self.xsd2py[value](o.toPython())
+                o = Literal(o, datatype=value, normalize=True)
                 v = o.value
             elif value == self.ns['soma'].array_double:
                 str_v = str(o).strip('[]')
@@ -139,11 +145,7 @@ class TriplesToSQL:
                     if isinstance(v[i], Decimal128):
                         v[i] = float(v[i].to_decimal())
                     new_v[i] = Literal(v[i], datatype=py2xsd[type(v[i])])
-                    # if not type(v[i]) == float:
-                    #     print('not str', v[i])
                     continue
-                # if 'hasJointPositionMin' in v[i] or 'hasJointPositionMax' in v[i]:
-                #     print(v[i])
                 if 'http://purl.org/dc/elements/1.1/' in v[i]:
                     v[i] = v[i].replace('http://purl.org/dc/elements/1.1/', 'http://purl.org/dc/elements/1.1#')
                 if v[i].startswith('http') and '#' in v[i]:
@@ -175,6 +177,10 @@ class TriplesToSQL:
             s_n3 = s_n3.strip('<>')
             predicate_dict[p_n3]['s'].append(s_n3)
             new_o = self.ont_2_py(o, p)
+
+            if type(new_o) == Literal:
+                new_o = new_o.toPython()
+
             if type(new_o) == str:
                 if "iai-kitchen.owl" in new_o:
                     new_o = new_o.replace("iai-kitchen.owl", "IAI-kitchen.owl")
@@ -182,7 +188,8 @@ class TriplesToSQL:
                 if '#' in new_o and new_o.startswith('http'):
                     new_o = URIRef(new_o).n3(g.namespace_manager)
                 new_o = new_o.strip('<>')
-            elif type(new_o) in [URIRef, Literal]:
+
+            if type(new_o) in [URIRef, Literal]:
                 new_o = new_o.n3(g.namespace_manager)
                 new_o = new_o.strip('<>')
             predicate_dict[p_n3]['o'].append(new_o)
