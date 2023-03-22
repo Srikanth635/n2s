@@ -10,6 +10,54 @@ from datetime import datetime
 from bson.decimal128 import Decimal128
 
 
+xsd2py = {XSD.integer: int, XSD.float: float, XSD.double: float, XSD.boolean: bool, XSD.dateTime: datetime,
+                XSD.positiveInteger: int, XSD.date: datetime, XSD.time: datetime, XSD.string: str,
+                XSD.anyURI: str, XSD.decimal: Decimal128, XSD.nonNegativeInteger: int, XSD.long: int}
+py2xsd = {int: XSD.integer, float: XSD.double, bool: XSD.boolean, datetime: XSD.dateTime, str: XSD.string,
+                Decimal128: XSD.decimal}
+xsd2sql = {XSD.integer: 'INT', XSD.float: 'DOUBLE', XSD.double: 'DOUBLE', XSD.boolean: 'BOOL',
+                XSD.positiveInteger: 'INT UNSIGNED', XSD.dateTime: 'DATETIME', XSD.date: 'DATE', XSD.time: 'TIME',
+                XSD.string: 'TEXT', XSD.anyURI: 'VARCHAR(255)'}
+
+def get_byte_size(value):
+    if type(value) == str:
+        return len(value.encode('utf-8'))
+    elif type(value) in [int, bool]:
+        return (value.bit_length() + 7) // 8
+    elif type(value) == float:
+        return 8
+    elif type(value) == datetime:
+        return 8
+
+def get_sql_type_from_pyval(val, signed=True):
+    pytype = type(val)
+    byte_size = get_byte_size(val)
+    if pytype == int:
+        if byte_size <= 4:
+            sqltype =  'INT' if signed else 'INT UNSIGNED'
+            byte_size = 4
+        elif byte_size <= 8:
+            sqltype = 'BIGINT' if signed else 'BIGINT UNSIGNED'
+            byte_size = 8
+        else:
+            sqltype = 'TEXT'
+            byte_size = 2**16-1
+    elif pytype == str:
+        if byte_size <= 255:
+            sqltype = 'VARCHAR(255)'
+            byte_size = 255
+        elif byte_size <= 2**16-1:
+            sqltype = 'TEXT'
+            byte_size = 2**16-1
+        elif byte_size <= 2**24-1:
+            sqltype = 'MEDIUMTEXT'
+            byte_size = 2**24-1
+        elif byte_size <= 2**32-1:
+            sqltype = 'LONGTEXT'
+            byte_size = 2**32-1
+    else:
+        sqltype = xsd2sql[py2xsd[pytype]]
+    return sqltype, byte_size
 
 
 class TriplesToSQL:
@@ -41,14 +89,19 @@ class TriplesToSQL:
         self.ns = {knsname: kns for knsname, kns in zip(known_ns_names, known_ns)}
         self.ns_str = {knsname: str(kns) for knsname, kns in zip(known_ns_names, known_ns)}
         self.reset_graph()
-        self.xsd2py = {XSD.integer: int, XSD.float: float, XSD.double: float, XSD.boolean: bool, XSD.dateTime: datetime,
-                       XSD.positiveInteger: int, XSD.date: datetime, XSD.time: datetime, XSD.string: str,
-                       XSD.anyURI: str, XSD.decimal: Decimal128, XSD.nonNegativeInteger: int, XSD.long: int}
+        self.property_sql_type = {}
     
     def reset_graph(self):
         self.g = Graph(bind_namespaces="rdflib")  
         for knsname, kns in self.ns.items():
             self.g.bind(knsname, kns)
+    
+    def get_sql_type(self, val, property_name=None, signed=True):
+        if property_name is not None:
+            if property_name in self.property_sql_type:
+                return self.property_sql_type[property_name]['type'], self.property_sql_type[property_name]['byte_size']
+        sqltype, byte_size = get_sql_type_from_pyval(val, signed=signed)
+        return sqltype, byte_size
 
     def xsd_2_mysql_type(self, property_name, o):
         for _, _, value in self.g.triples((property_name, RDFS.range, None)):
@@ -61,6 +114,8 @@ class TriplesToSQL:
                 return 'VARCHAR(255)'
             elif value == XSD.integer:
                 return 'INT'
+            elif value == XSD.positiveInteger:
+                return 'INT UNSIGNED'
             elif value == XSD.float:
                 return 'FLOAT'
             elif value == XSD.double:
@@ -81,6 +136,8 @@ class TriplesToSQL:
     def ont_2_py(self, obj, name):
         o = obj
         property_name = URIRef(name)
+        p_n3 = property_name.n3(self.g.namespace_manager)
+        p_n3 = re.sub(':|-', '_', p_n3)
         # print(property_name.n3(self.g.namespace_manager))
         for _, _, value in self.g.triples((property_name, RDFS.range, None)):
             val = value.n3(self.g.namespace_manager)
@@ -91,9 +148,19 @@ class TriplesToSQL:
                 self.all_property_types[property_name] = value
             if str(XSD) in str(value):
                 if isinstance(o, Literal):
-                    o = self.xsd2py[value](o.toPython())
+                    o = xsd2py[value](o.toPython())
                 o = Literal(o, datatype=value, normalize=True)
                 v = o.value
+                key = p_n3+'.o'
+                if key not in self.property_sql_type:
+                    self.property_sql_type[key] = {}
+                if type(v) in [int, str]:
+                    signed = value != XSD.positiveInteger
+                    self.property_sql_type[key]['type'], self.property_sql_type[key]['byte_size'] = \
+                        get_sql_type_from_pyval(v, signed=signed)
+                else:
+                    self.property_sql_type[key]['type'] = xsd2sql[value]
+                    self.property_sql_type[key]['byte_size'] = get_byte_size(v)
             elif value == self.ns['soma'].array_double:
                 str_v = str(o).strip('[]')
                 sep = ' ' if ' ' in str_v else ','
@@ -146,8 +213,14 @@ class TriplesToSQL:
                         v[i] = float(v[i].to_decimal())
                     new_v[i] = Literal(v[i], datatype=py2xsd[type(v[i])])
                     continue
-                if 'http://purl.org/dc/elements/1.1/' in v[i]:
-                    v[i] = v[i].replace('http://purl.org/dc/elements/1.1/', 'http://purl.org/dc/elements/1.1#')
+                # make sure that the predicate uri is correctly formatted
+                if i == 1:
+                    if 'http' in v[i]:
+                        if '#' not in v[i]:
+                            splitted_vi = v[i].split('/')
+                            last_vi = splitted_vi[-1]
+                            v[i] = '/'.join(splitted_vi[:-1]) + '#' + last_vi
+                # make sure that the ontology is in the graph, if not add it
                 if v[i].startswith('http') and '#' in v[i]:
                     ns_name = v[i].split('#')[0].split('/')[-1].split('.owl')[0]
                     ns_iri = v[i].split('#')[0]+'#'
@@ -156,7 +229,13 @@ class TriplesToSQL:
                         self.ns_str[ns_name] = v[i].split('#')[0]+'#'
                         self.g.bind(ns_name, self.ns[ns_name])
                 v[i] = v[i].strip('<>')
-                new_v[i] = URIRef(v[i].strip('<>')) if '#' in v[i] and v[i].startswith('http://') else Literal(v[i].strip('<>'))
+                # assert that the predicate name is correctly formatted, because it is used as a sql table name
+                if i == 1:
+                    if 'http' in v[i]:
+                        assert v[i].startswith('http') and '#' in v[i], 'Property name must be a URI, not {}'.format(v[i])
+                    else:
+                        assert '/' not in v[i], 'Property name is not formatted correctly {}'.format(v[i])
+                new_v[i] = URIRef(v[i].strip('<>')) if '#' in v[i] and v[i].startswith('http') else Literal(v[i].strip('<>'))
             self.g.add((new_v[0], new_v[1], new_v[2]))
             # break
         # print(json.dumps(self.ns, indent=4))
@@ -230,6 +309,7 @@ class TriplesToSQL:
             if new_p != p:
                 predicate_dict[new_p] = predicate_dict[p]
                 del predicate_dict[p]
+            
             keys = list(predicate_dict[new_p].keys())
             k1, k2 = keys[0], keys[1]
             new_predicate_dict[new_p] = [{k1:predicate_dict[new_p][k1][i], k2:predicate_dict[new_p][k2][i]} for i in range(len(predicate_dict[new_p][k1]))]
@@ -239,10 +319,11 @@ class TriplesToSQL:
         return new_predicate_dict
     
     def find_link_in_graph_dict(self, value, data):
-        if value in data['rdf_type']['s']:
+        try:
             idx = data['rdf_type']['s'].index(value)
             return idx+1, data['rdf_type']['o'][idx]
-        return None, None
+        except:
+            return None, None
 
     def triples_json_filter_func(self, doc):
         iri = doc['@id']
@@ -267,15 +348,15 @@ if __name__ == "__main__":
 
     # Create a graph from the sql database or from the json file
     create_graph_from_sql = False
-    create_graph_from_json = False
-    create_graph_from_mongo = True
+    create_graph_from_json = True
+    create_graph_from_mongo = False
 
     # Save the graph to a json file
     save_graph_to_json = False
 
     # Create a sql database from the graph dictionary or from the json file
-    create_sql_from_graph_dict = True
-    create_sql_from_graph_json = False
+    create_sql_from_graph_dict = False
+    create_sql_from_graph_json = True
 
     # Create sqlalchemy engine
     sql_url = os.environ['LOCAL_SQL_URL']
@@ -314,4 +395,4 @@ if __name__ == "__main__":
         # Create a sql database from the json file
         triples_data = json.load(open('test.json'))
         name = "restructred_triples"
-        json_to_sql(name, triples_data, engine, filter_doc=None, value_mapping_func=lambda x,n: x)
+        json_to_sql(name, triples_data, engine, filter_doc=t2sql.triples_json_filter_func, value_mapping_func=lambda x,name: x)
