@@ -16,6 +16,7 @@ from orderedset import OrderedSet
 from triples_to_sql import TriplesToSQL, get_byte_size, get_sql_type_from_pyval
 from tqdm import tqdm
 import argparse
+import pickle
 
 
 # mongo_to_python_conversions
@@ -524,6 +525,7 @@ class SQLCreator():
         # Create tables
         pbar = tqdm(total=len(self.sql_table_creation_cmds),desc="Executing Schema Creation Commands",colour='#FFA500')
         self._execute_cmds(self.sql_table_creation_cmds, conn, pbar=pbar)
+        pbar_time = pbar.format_dict['elapsed']
         pbar.close()
 
         # Insert data
@@ -532,10 +534,12 @@ class SQLCreator():
         self._execute_cmds(sql_insert_cmds, conn, pbar=pbar)
         conn.execute(text("SET FOREIGN_KEY_CHECKS=1;"))
         conn.commit()
+        pbar_time += pbar.format_dict['elapsed']
         pbar.close()
         
         # Close the connection
         conn.close()
+        return len(sql_insert_cmds) + len(self.sql_table_creation_cmds), pbar_time
 
     def _drop_tables(self, data, conn):
         conn.execute(text("SET FOREIGN_KEY_CHECKS=0;"))
@@ -677,7 +681,9 @@ def link_predicate_tables(find_link_func, sql_creator, use_pbar=True):
                 if use_pbar:
                     pbar.update(1)
     if use_pbar:
+        pbar_time = pbar.format_dict['elapsed']
         pbar.close()
+        return total, pbar_time
 
 def link_tf_and_triples(data:dict, sql_creator:SQLCreator, use_pbar=True):
     time_start = np.array(sql_creator.data_to_insert['soma_hasIntervalBegin']['o'])
@@ -735,10 +741,13 @@ def link_tf_and_triples(data:dict, sql_creator:SQLCreator, use_pbar=True):
         if use_pbar:
             pbar.update(1)
     if use_pbar:
+        pbar_time = pbar.format_dict['elapsed']
         pbar.close()
     new_table_name = sql_creator.link_column_to_new_table('tf_header', 'soma_hasIntervalBegin', stamp_idx, s_idx_list)
     sql_creator.add_fk_column('soma_hasIntervalEnd', new_table_name, 'soma_hasIntervalEnd_ID')
     sql_creator.data_to_insert[new_table_name]['soma_hasIntervalEnd_ID'] = e_idx_list
+    if use_pbar:
+        return len(time_end), pbar_time
 
 def mongo_collection_to_list_of_dicts(collection):
     return [doc for doc in collection.find({})]
@@ -780,6 +789,8 @@ if __name__ == "__main__":
     first_n_batches = 12
     meta_lod_batches = [meta_lod[i:i + batch_sz] for i in range(0, len(meta_lod), batch_sz)]
     coll_names = ['tf', 'triples', 'annotations', 'inferred']
+    verification_time = 0
+    total_time = 0
     for batch_idx, batch in enumerate(meta_lod_batches[:first_n_batches]):
 
         verification = tqdm(total=batch_sz*4, desc=f"Verifying Data (batch {batch_idx})", colour='#FFA500')
@@ -794,16 +805,20 @@ if __name__ == "__main__":
                     t2sql.mongo_triples_to_graph(lod)
                     lod = t2sql.graph_to_dict()
                 verification.update(1)
-
+        verification_time += verification.format_dict['elapsed']
+        total_time += verification_time
         verification.close()
 
+    total_meta_time = 0
+    total_creation_time = 0
+    total_tf_creation_time = 0
+    total_triples_creation_time = 0
+    data_sizes = {c:[] for c in coll_names}
+    data_times = {c:[] for c in coll_names}
     for batch_idx, batch in enumerate(meta_lod_batches[:first_n_batches]):
-
         all_docs = 0
-        creation_time_s = time()
         collections = {}
         meta_data = tqdm(total=batch_sz*4, desc=f"Collecting & Restructuring Data (batch {batch_idx})", colour='#FFA500')
-
         for d_i, doc in enumerate(batch):
 
             id = str(doc['_id'])
@@ -813,12 +828,16 @@ if __name__ == "__main__":
                 if cname in ['annotations', 'triples']:
                     t2sql.mongo_triples_to_graph(lod)
                     lod = t2sql.graph_to_dict()
-                    all_docs += sum([len(v) for v in lod.values()])
+                    sz = sum([len(v) for v in lod.values()])
                 else:
-                    all_docs += len(lod)
+                    sz = len(lod)
+                all_docs += sz
                 collections[id+'_'+cname] = {'name':cname,'data':lod, 'id':doc['_id']}
                 meta_data.update(1)
-
+                if sz > 0:
+                    data_sizes[cname].append(sz)
+        total_meta_time += meta_data.format_dict['elapsed']
+        total_time += total_meta_time
         meta_data.close()
         
         all_neems_pbar = tqdm(total=all_docs, desc="Generating SQL Commands", colour='#FFA500')
@@ -832,17 +851,17 @@ if __name__ == "__main__":
                                     coll['data'],
                                     sql_creator=sql_creator,
                                     neem_id=doc['_id'], pbar=[neem_pbar, all_neems_pbar], verbose=verbose)
-        
+                total_tf_creation_time += neem_pbar.format_dict['elapsed']
             else:
                 dict_to_sql(coll['data'],
                         sql_creator=predicate_sql_creator,
                         neem_id=doc['_id'], pbar=[neem_pbar, all_neems_pbar], verbose=verbose)
+                total_triples_creation_time += neem_pbar.format_dict['elapsed']
             neem_pbar.close()
-
+            data_times[coll['name']].append(neem_pbar.format_dict['elapsed'])
+        total_creation_time += all_neems_pbar.format_dict['elapsed']
+        total_time += total_creation_time
         all_neems_pbar.close()
-        
-        if verbose:
-            print("Creation Time = ", time() - creation_time_s)
 
     client.close()
 
@@ -852,8 +871,30 @@ if __name__ == "__main__":
 
     data = sql_creator.data_to_insert
    
-    link_predicate_tables(t2sql.find_link_in_graph_dict, predicate_sql_creator)
-    link_tf_and_triples(data, predicate_sql_creator)
+    predicate_linking_sz, predicate_linking_time = link_predicate_tables(t2sql.find_link_in_graph_dict, predicate_sql_creator)
+    total_time += predicate_linking_time
+    data_sizes['predicate_linking'] = [predicate_linking_sz]
+    data_times['predicate_linking'] = [predicate_linking_time]
+    tf_triples_linking_sz, tf_triples_linking_time = link_tf_and_triples(data, predicate_sql_creator)
+    total_time += tf_triples_linking_time
+    data_sizes['tf_triples_linking'] = [tf_triples_linking_sz]
+    data_times['tf_triples_linking'] = [tf_triples_linking_time]
 
     sql_creator.merge_with(predicate_sql_creator)
-    sql_creator.upload_data_to_sql(sqlalchemy_engine=engine)
+    data_upload_sz, data_upload_time = sql_creator.upload_data_to_sql(sqlalchemy_engine=engine)
+    total_time += data_upload_time
+    data_sizes['data_upload'] = [data_upload_sz]
+    data_times['data_upload'] = [data_upload_time]
+    data_stats = {'data_sizes':data_sizes, 'data_times':data_times}
+    print("Verification Time = ", verification_time)
+    print("Meta Time = ", total_meta_time)
+    print("TF Creation Time = ", total_tf_creation_time)
+    print("Triples Creation Time = ", total_triples_creation_time)
+    print("Creation Time = ", total_creation_time)
+    print("Predicate Linking Time = ", predicate_linking_time)
+    print("TF Triples Linking Time = ", tf_triples_linking_time)
+    print("Data Upload Time = ", data_upload_time)
+    print("Total Time = ", total_time)
+
+    with open('data_stats.pickle', 'wb') as f:
+        pickle.dump(data_stats, f, protocol=pickle.HIGHEST_PROTOCOL)
