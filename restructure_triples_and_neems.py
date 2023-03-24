@@ -654,15 +654,22 @@ def dict_to_sql(data, sql_creator=None, neem_id=None, pbar=None, verbose=False):
             if pbar is not None:
                 [pb.update(1) for pb in pbar]
 
-def link_predicate_tables(find_link_func, sql_creator, use_pbar=True):
+def link_predicate_tables(find_link_func, sql_creator:SQLCreator, use_pbar=True):
     data_to_insert_cp = deepcopy(sql_creator.data_to_insert)
     if use_pbar:
-        total = sum([len(v) for k, v in data_to_insert_cp.items() if k != 'rdf_type'])
+        # total = sum([len(v) for k, v in data_to_insert_cp.items() if k != 'rdf_type'])
+        total = sum([len(v) for k, v in data_to_insert_cp.items()])
         pbar = tqdm(total=total, desc="Linking Predicate Tables", colour="#FFA500")
     for key, cols in data_to_insert_cp.items():
-        if key == 'rdf_type':
-            continue
+        # if key == 'rdf_type':
+        #     continue
         for i, (col_name, col_data) in enumerate(cols.items()):
+                if use_pbar:
+                    pbar.update(1)
+                if type(col_data[0]) != str:
+                    continue
+                sql_creator.sql_table_creation_cmds.add(f"CREATE INDEX IF NOT EXISTS {key+'_'+col_name+'_idx'} ON {key} ({col_name});")
+                continue
                 all_ok = False
                 prev_dtype = ''
                 indicies = []
@@ -670,7 +677,7 @@ def link_predicate_tables(find_link_func, sql_creator, use_pbar=True):
                 for v_i, v in enumerate(col_data):
                     idx, dtype = find_link_func(v, data_to_insert_cp)
                     all_ok = dtype != None
-                    if not all_ok and col_name != 'ID' and had_int:
+                    if not all_ok and had_int:
                         print(f"not all ok for {key} {col_name} {v} {dtype} {prev_dtype}")
                     if not all_ok:
                         break
@@ -678,8 +685,6 @@ def link_predicate_tables(find_link_func, sql_creator, use_pbar=True):
                     indicies.append((v_i, idx))
                 if all_ok:
                     sql_creator.link_column_to_exiting_table(key, col_name,'rdf_type', indicies)
-                if use_pbar:
-                    pbar.update(1)
     if use_pbar:
         pbar_time = pbar.format_dict['elapsed']
         pbar.close()
@@ -759,8 +764,16 @@ if __name__ == "__main__":
     # Parse command line arguments
     parser = argparse.ArgumentParser()
     parser.add_argument('--verbose', '-v', action='store_true')
+    parser.add_argument('--append_to_sql', '-ap', action='store_true')
+    parser.add_argument('--sql_url_env_var', '-su', default="LOCAL_SQL_URL")
     args = parser.parse_args()
     verbose = args.verbose
+    append_to_sql = args.append_to_sql
+    sql_url_env_var = args.sql_url_env_var
+
+    if append_to_sql:
+        sql_url = os.environ["LOCAL_SQL_URL"]
+        engine = create_engine(sql_url)
 
     # Replace the uri string with your MongoDB deployment's connection string.
     MONGODB_URI = os.environ["LOCAL_MONGODB_URI"]
@@ -837,7 +850,6 @@ if __name__ == "__main__":
                 if sz > 0:
                     data_sizes[cname].append(sz)
         total_meta_time += meta_data.format_dict['elapsed']
-        total_time += total_meta_time
         meta_data.close()
         
         all_neems_pbar = tqdm(total=all_docs, desc="Generating SQL Commands", colour='#FFA500')
@@ -860,10 +872,11 @@ if __name__ == "__main__":
             neem_pbar.close()
             data_times[coll['name']].append(neem_pbar.format_dict['elapsed'])
         total_creation_time += all_neems_pbar.format_dict['elapsed']
-        total_time += total_creation_time
         all_neems_pbar.close()
 
     client.close()
+    total_time += total_meta_time
+    total_time += total_creation_time
 
     # create tables and upload data to the sql database
     sql_url = os.environ["LOCAL_SQL_URL"]
