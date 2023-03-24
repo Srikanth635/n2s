@@ -654,37 +654,18 @@ def dict_to_sql(data, sql_creator=None, neem_id=None, pbar=None, verbose=False):
             if pbar is not None:
                 [pb.update(1) for pb in pbar]
 
-def link_predicate_tables(find_link_func, sql_creator:SQLCreator, use_pbar=True):
+def link_predicate_tables(sql_creator:SQLCreator, use_pbar=True):
     data_to_insert_cp = deepcopy(sql_creator.data_to_insert)
     if use_pbar:
-        # total = sum([len(v) for k, v in data_to_insert_cp.items() if k != 'rdf_type'])
         total = sum([len(v) for k, v in data_to_insert_cp.items()])
         pbar = tqdm(total=total, desc="Linking Predicate Tables", colour="#FFA500")
     for key, cols in data_to_insert_cp.items():
-        # if key == 'rdf_type':
-        #     continue
         for i, (col_name, col_data) in enumerate(cols.items()):
                 if use_pbar:
                     pbar.update(1)
                 if type(col_data[0]) != str:
                     continue
                 sql_creator.sql_table_creation_cmds.add(f"CREATE INDEX IF NOT EXISTS {key+'_'+col_name+'_idx'} ON {key} ({col_name});")
-                continue
-                all_ok = False
-                prev_dtype = ''
-                indicies = []
-                had_int = False
-                for v_i, v in enumerate(col_data):
-                    idx, dtype = find_link_func(v, data_to_insert_cp)
-                    all_ok = dtype != None
-                    if not all_ok and had_int:
-                        print(f"not all ok for {key} {col_name} {v} {dtype} {prev_dtype}")
-                    if not all_ok:
-                        break
-                    prev_dtype = dtype
-                    indicies.append((v_i, idx))
-                if all_ok:
-                    sql_creator.link_column_to_exiting_table(key, col_name,'rdf_type', indicies)
     if use_pbar:
         pbar_time = pbar.format_dict['elapsed']
         pbar.close()
@@ -884,7 +865,7 @@ if __name__ == "__main__":
 
     data = sql_creator.data_to_insert
    
-    predicate_linking_sz, predicate_linking_time = link_predicate_tables(t2sql.find_link_in_graph_dict, predicate_sql_creator)
+    predicate_linking_sz, predicate_linking_time = link_predicate_tables(predicate_sql_creator)
     total_time += predicate_linking_time
     data_sizes['predicate_linking'] = [predicate_linking_sz]
     data_times['predicate_linking'] = [predicate_linking_time]

@@ -34,8 +34,8 @@ metadata_obj.create_all(engine)
 
 # select data from the sql database
 stmt = select(text("user_account.id")).select_from(text("user_account")).where(text("user_account.name='spongebob'"))
-# stmt =text("""SELECT TABLE_NAME, COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS as columns WHERE TABLE_SCHEMA = N'test'""")
-stmt = select(text("TABLE_NAME, COLUMN_NAME")).select_from(text("INFORMATION_SCHEMA.COLUMNS")).where(text("TABLE_SCHEMA = N'test'"))
+stmt =text("""SELECT TABLE_NAME, COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = N'test'""")
+# stmt = select(text("TABLE_NAME, COLUMN_NAME")).select_from(text("INFORMATION_SCHEMA.COLUMNS")).where(text("TABLE_SCHEMA = N'test'"))
 with engine.connect() as conn:
     result = conn.execute(stmt)
     if result.rowcount == 0:
