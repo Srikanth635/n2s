@@ -60,7 +60,8 @@ def print_all_collection_types(collection):
     find_datatype(single_doc)
 
 class SQLCreator():
-    def __init__(self, value_mapping_func=None, allowed_missing_percentage=5, tosql_func=None) -> None:
+    def __init__(self, engine=None, value_mapping_func=None, allowed_missing_percentage=5, tosql_func=None, verbose=False) -> None:
+        self.engine = engine
         self.not_always_there = []
         self.sql_table_creation_cmds = OrderedSet()
         self.data_to_insert = {}
@@ -75,6 +76,8 @@ class SQLCreator():
         self.allowed_missing_percentage = allowed_missing_percentage
         self.tosql_func = tosql_func
         self.data_bytes = {}
+        self.verpose = verbose
+        self.sql_meta_data = self._get_sql_meta_data()
 
     def reset_data(self):
         self.sql_table_creation_cmds = OrderedSet()
@@ -127,11 +130,11 @@ class SQLCreator():
                 for k, v in obj.items():
                     if '#' in k:
                         k = k.split('#')[1]
-                    if k not in self.all_obj_keys[key]:
+                    if k not in self.all_obj_keys[key] and k not in self.sql_meta_data.get(key, []):
                         self.not_always_there.append(key+'.'+k)
                 for k, v in self.all_obj_keys[key].items():
-                    if k not in obj_k:
-                        self.not_always_there.append(key+'.'+k)
+                    if k not in obj_k and k not in self.sql_meta_data.get(key, []):
+                            self.not_always_there.append(key+'.'+k)
             else:
                 self.all_obj_keys[key] = {}
                 self.obj_key_count[key] = {'key_count': 0}
@@ -143,12 +146,13 @@ class SQLCreator():
                 self.obj_key_count[key][k] = self.obj_key_count[key].get(k, 0) + 1
                 if type(v) == list:
                     if len(v) == 1:
-                        if key+'.'+k not in self.one_item_lists and key+'.'+k not in self.not_one_item_lists:
+                        if (key+'.'+k not in self.one_item_lists and key+'.'+k not in self.not_one_item_lists)\
+                            or k in self.sql_meta_data.get(key, []):
                             self.one_item_lists.append(key+'.'+k)
                     else:
-                        if key+'.'+k not in self.not_one_item_lists:
+                        if key+'.'+k not in self.not_one_item_lists and k not in self.sql_meta_data.get(key, []):
                             self.not_one_item_lists.append(key+'.'+k)
-                        if key+'.'+k in self.one_item_lists:
+                        if key+'.'+k in self.one_item_lists and k not in self.sql_meta_data.get(key, []):
                             self.one_item_lists.remove(key+'.'+k)
 
             for k, v in obj.items():
@@ -160,16 +164,15 @@ class SQLCreator():
         elif np.iterable(obj) and type(obj) != str:
             table_name = parent_key+'_'+key
             for v in obj:
-                # if type(v) not in [dict, list]:
-                #     v = {'value':v}
                 if type(v) == dict:
                     if len(v) == 1:
-                        if table_name not in self.one_item_lists and table_name not in self.not_one_item_lists:
+                        if (table_name not in self.one_item_lists and table_name not in self.not_one_item_lists)\
+                            or table_name in self.sql_meta_data:
                             self.one_item_lists.append(table_name)
                     else:
-                        if table_name not in self.not_one_item_lists:
+                        if table_name not in self.not_one_item_lists and table_name not in self.sql_meta_data:
                             self.not_one_item_lists.append(table_name)
-                        if table_name in self.one_item_lists:
+                        if table_name in self.one_item_lists and table_name not in self.sql_meta_data:
                             self.one_item_lists.remove(table_name)
                 self.find_relationships(key, v, parent_key)
         else:
@@ -181,8 +184,9 @@ class SQLCreator():
             for k, count in all_count.items():
                 if k == 'key_count':
                     continue
-                if ((1 - count/total_count) * 100) > self.allowed_missing_percentage:
-                    self.not_always_there.append(key+'.'+k)  
+                if k not in self.sql_meta_data.get(key, []):
+                    if ((1 - count/total_count) * 100) > self.allowed_missing_percentage:
+                        self.not_always_there.append(key+'.'+k)  
 
     def convert_to_sql(self, key, obj, parent_key=None,
                         key_iri='', parent_key_iri='', parent_table_name='',
@@ -239,14 +243,22 @@ class SQLCreator():
             # Insertion                        
             # This checks if all the keys (i.e. columns) where defined before, and have values already.
             all_keys_exist = False
-            if table_name in self.data_to_insert.keys():
-                if parent_list:
+            latest_id = 0
+            if parent_list:
+                if table_name in self.sql_meta_data:
+                    res = self.get_id_from_sql(table_name, obj, max_id=True)
+                    if len(res) != 0:
+                        ID = res[-1]
+                        return obj, type(obj), np.iterable(obj) and type(obj) != str, ID
+                    else:
+                        latest_id = self.get_max_id_from_sql(table_name)
+                if table_name in self.data_to_insert.keys():
                     if type(self.data_to_insert[table_name]) == dict:
                         all_keys_exist = all([k in self.data_to_insert[table_name].keys() for k in obj.keys()])
-            else:
+            if table_name not in self.data_to_insert.keys():
                 self.data_to_insert[table_name] = {}
                 self.data_to_insert[table_name]['ID'] = []
-                ID = 1
+                ID = 1 + latest_id
 
             # Now that the keys exist, this would check if the values also exist, if it does then skip it, and use old one ID.
             # This is to get all values of all columns and put them together to for a complete row in the table
@@ -263,14 +275,14 @@ class SQLCreator():
                     row = tuple(row)
                 all_values_exist = row in rows_list  
                 if  all_values_exist:         
-                    ID = rows_list.index(row) + 1
+                    ID = rows_list.index(row) + 1 + latest_id
                     return obj, type(obj), np.iterable(obj) and type(obj) != str, ID
                 else:
-                    ID = len(rows_list) + 1
+                    ID = len(rows_list) + 1 + latest_id
                 if verbose:
                     print("Time to check if all values exist: ", time()-start)
             elif ID is None:
-                ID = len(self.data_to_insert[table_name]['ID']) + 1
+                ID = len(self.data_to_insert[table_name]['ID']) + 1 + latest_id
 
             # Add new ID for the new entry.
             self.data_to_insert[table_name]['ID'].append('NULL')
@@ -289,7 +301,8 @@ class SQLCreator():
                 if v_iterable:
                     k_table_name = key+'_'+k
                     if v_type == dict:
-                        if key+'.'+k in self.one_item_lists and key+'.'+k not in self.not_always_there:
+                        #if key+'.'+k in self.one_item_lists and key+'.'+k not in self.not_always_there:
+                        if key+'.'+k not in self.not_always_there:
                             self.add_fk_column(parent_table_name=k_table_name, table_name=table_name, col_name=k)
                             if f'{k}' not in self.data_to_insert[table_name]:
                                 self.data_to_insert[table_name][f'{k}'] = [v_id]
@@ -418,10 +431,31 @@ class SQLCreator():
         col_string += ';'
         self.sql_table_creation_cmds.add(col_string)
     
-    def get_id_from_sql(self, table_name, col_names, values):
+    def get_id_from_sql(self, table_name:str, col_value_pairs:dict, max_id=False):
         sql_cmd = f"SELECT ID FROM {table_name} WHERE "
-        for i in range(len(col_names)):
-            sql_cmd += f"{col_names[i]} = '{values[i]}' AND "
+        for i, (k, v) in enumerate(col_value_pairs.items()):
+            sql_cmd += f"{k} = '{v}'"
+            if i != len(col_value_pairs)-1:
+                sql_cmd += ' AND '
+            else:
+                sql_cmd += ';'
+        with self.engine.connect() as conn:
+            result = conn.execute(text(sql_cmd))
+            result = result.fetchall()
+            result = [x[0] for x in result]
+        return result
+    
+    def get_max_id_from_sql(self, table_name:str, col_name='ID'):
+        sql_cmd = f"SELECT MAX({col_name}) FROM {table_name};"
+        with self.engine.connect() as conn:
+            result = conn.execute(text(sql_cmd))
+            result = result.fetchall()
+            result = [x[0] for x in result]
+            if len(result) == 0:
+                result = 0
+            else:
+                result = result[0]
+        return result
         
     
     def link_column_to_new_table(self, parent_table_name, type_name, instance_table_indicies, original_table_indicies):
@@ -507,11 +541,28 @@ class SQLCreator():
                 
                 sql_insert_commands.append(f"INSERT INTO {key} {cols_str} VALUES {all_rows_str};")
         return sql_insert_commands
+    
+    def _get_sql_meta_data(self):
+        stmt =text("SELECT TABLE_NAME, COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = N'test'")
+        meta_data = {}
+        with engine.connect() as conn:
+            result = conn.execute(stmt)
+            for row in result:
+                if row[0] not in meta_data:
+                        meta_data[row[0]] = []
+                if row[1] != 'ID':
+                    meta_data[row[0]].append(row[1])
+            if verbose:
+                if result.rowcount == 0:
+                    print("No data found")
+                else:
+                    print(result.rowcount, "row(s) found")
+            return meta_data
 
-    def upload_data_to_sql(self, sqlalchemy_engine, drop_tables=True, verbose=False):
+    def upload_data_to_sql(self, drop_tables=True, verbose=False):
 
         # Create a connection
-        conn = sqlalchemy_engine.connect()
+        conn = self.engine.connect()
 
         # Get the inertion cmds
         insertion_time_s = time()
@@ -608,7 +659,7 @@ def neem_collection_to_sql(name, collection:list, sql_creator=None, neem_id=None
 
 def json_to_sql(top_table_name, json_data, sqlalachemy_engine, filter_doc=None, drop_tables=True, value_mapping_func=None, pbar=None, verbose=False):
     n_doc = 0
-    sql_creator = SQLCreator(value_mapping_func=value_mapping_func)
+    sql_creator = SQLCreator(value_mapping_func=value_mapping_func, engine=sqlalachemy_engine)
     funcs = [sql_creator.find_relationships, sql_creator.convert_to_sql]
     for f_i, func in enumerate(funcs):
         for doc in json_data:
@@ -640,9 +691,7 @@ def json_to_sql(top_table_name, json_data, sqlalachemy_engine, filter_doc=None, 
         print("number_of_json_documents = ", n_doc)
     sql_creator.upload_data_to_sql(drop_tables=drop_tables, sqlalchemy_engine=sqlalachemy_engine)
 
-def dict_to_sql(data, sql_creator=None, neem_id=None, pbar=None, verbose=False):
-    if sql_creator is None:
-        sql_creator = SQLCreator()
+def dict_to_sql(data, sql_creator:SQLCreator, neem_id=None, pbar=None, verbose=False):
     neem_id_val = mon2py(deepcopy(neem_id)) if neem_id is not None else None
     for key, docs in data.items():
         if '"' in key:
@@ -681,6 +730,13 @@ def link_tf_and_triples(data:dict, sql_creator:SQLCreator, use_pbar=True):
     stamp = np.array(data['tf_header']['stamp'])
     links = np.array(data['tf']['child_frame_id'])
     stamp_neem_id = np.array(data['tf']['neem_id'])
+    latest_stampidx, latest_sidx, latest_eidx = 0, 0, 0
+    if 'tf_header' in sql_creator.sql_meta_data:
+        latest_stampidx = sql_creator.get_max_id_from_sql('tf_header')
+    if 'soma_hasIntervalBegin' in sql_creator.sql_meta_data:
+        latest_sidx = sql_creator.get_max_id_from_sql('soma_hasIntervalBegin')
+    if 'soma_hasIntervalEnd' in sql_creator.sql_meta_data:
+        latest_eidx = sql_creator.get_max_id_from_sql('soma_hasIntervalEnd')
     e_idx_list = []
     s_idx_list = []
     stamp_idx = []
@@ -719,11 +775,11 @@ def link_tf_and_triples(data:dict, sql_creator:SQLCreator, use_pbar=True):
             new_res = list(new_res)
             assert all([r-1 in res for r in new_res])
             assert all([stamp[r-1] >= s and stamp[r-1] < e for r in new_res])
-            res = new_res
+            res = [r + latest_stampidx for r in new_res]
             if len(res) > 0:
                 stamp_idx.extend(res)
-                e_idx_list.extend([e_idx+1]*len(res))
-                s_idx_list.extend([s_idx+1]*len(res))
+                e_idx_list.extend([e_idx+1+latest_eidx]*len(res))
+                s_idx_list.extend([s_idx+1+latest_sidx]*len(res))
         if use_pbar:
             pbar.update(1)
     if use_pbar:
@@ -739,7 +795,6 @@ def mongo_collection_to_list_of_dicts(collection):
     return [doc for doc in collection.find({})]
     
 
-
 if __name__ == "__main__":
 
     # Parse command line arguments
@@ -752,10 +807,6 @@ if __name__ == "__main__":
     append_to_sql = args.append_to_sql
     sql_url_env_var = args.sql_url_env_var
 
-    if append_to_sql:
-        sql_url = os.environ["LOCAL_SQL_URL"]
-        engine = create_engine(sql_url)
-
     # Replace the uri string with your MongoDB deployment's connection string.
     MONGODB_URI = os.environ["LOCAL_MONGODB_URI"]
     # set a 5-second connection timeout
@@ -766,10 +817,14 @@ if __name__ == "__main__":
     except Exception:
         print("Unable to connect to the server.")
 
+    # Create SQL engine
+    sql_url = os.environ["LOCAL_SQL_URL"]
+    engine = create_engine(sql_url)
+
     db = client.neems
     t2sql = TriplesToSQL()
-    sql_creator = SQLCreator(tosql_func=lambda v, table_name:get_sql_type_from_pyval(v))
-    predicate_sql_creator = SQLCreator(tosql_func=t2sql.get_sql_type)
+    sql_creator = SQLCreator(engine, tosql_func=lambda v, table_name:get_sql_type_from_pyval(v))
+    predicate_sql_creator = SQLCreator(engine, tosql_func=t2sql.get_sql_type)
 
 
     # Adding meta data
@@ -781,11 +836,13 @@ if __name__ == "__main__":
     meta_lod = list(reversed(meta_lod))
     batch_sz = 5
     first_n_batches = 12
+    start_from = 0
     meta_lod_batches = [meta_lod[i:i + batch_sz] for i in range(0, len(meta_lod), batch_sz)]
     coll_names = ['tf', 'triples', 'annotations', 'inferred']
     verification_time = 0
     total_time = 0
-    for batch_idx, batch in enumerate(meta_lod_batches[:first_n_batches]):
+    tf_len = []
+    for batch_idx, batch in enumerate(meta_lod_batches[start_from:start_from+first_n_batches]):
 
         verification = tqdm(total=batch_sz*4, desc=f"Verifying Data (batch {batch_idx})", colour='#FFA500')
 
@@ -798,10 +855,14 @@ if __name__ == "__main__":
                 if cname in ['annotations', 'triples']:
                     t2sql.mongo_triples_to_graph(lod)
                     lod = t2sql.graph_to_dict()
+                elif cname == 'tf':
+                    tf_len.append(len(lod))
                 verification.update(1)
         verification_time += verification.format_dict['elapsed']
-        total_time += verification_time
         verification.close()
+    if verbose:
+        print("tf_len", tf_len)
+    total_time += verification_time
 
     total_meta_time = 0
     total_creation_time = 0
@@ -809,7 +870,7 @@ if __name__ == "__main__":
     total_triples_creation_time = 0
     data_sizes = {c:[] for c in coll_names}
     data_times = {c:[] for c in coll_names}
-    for batch_idx, batch in enumerate(meta_lod_batches[:first_n_batches]):
+    for batch_idx, batch in enumerate(meta_lod_batches[start_from:start_from+first_n_batches]):
         all_docs = 0
         collections = {}
         meta_data = tqdm(total=batch_sz*4, desc=f"Collecting & Restructuring Data (batch {batch_idx})", colour='#FFA500')
@@ -843,12 +904,12 @@ if __name__ == "__main__":
                 neem_collection_to_sql(coll['name'],
                                     coll['data'],
                                     sql_creator=sql_creator,
-                                    neem_id=doc['_id'], pbar=[neem_pbar, all_neems_pbar], verbose=verbose)
+                                    neem_id=coll['id'], pbar=[neem_pbar, all_neems_pbar], verbose=verbose)
                 total_tf_creation_time += neem_pbar.format_dict['elapsed']
             else:
                 dict_to_sql(coll['data'],
-                        sql_creator=predicate_sql_creator,
-                        neem_id=doc['_id'], pbar=[neem_pbar, all_neems_pbar], verbose=verbose)
+                            predicate_sql_creator,
+                            neem_id=coll['id'], pbar=[neem_pbar, all_neems_pbar], verbose=verbose)
                 total_triples_creation_time += neem_pbar.format_dict['elapsed']
             neem_pbar.close()
             data_times[coll['name']].append(neem_pbar.format_dict['elapsed'])
@@ -858,10 +919,6 @@ if __name__ == "__main__":
     client.close()
     total_time += total_meta_time
     total_time += total_creation_time
-
-    # create tables and upload data to the sql database
-    sql_url = os.environ["LOCAL_SQL_URL"]
-    engine = create_engine(sql_url)
 
     data = sql_creator.data_to_insert
    
@@ -875,7 +932,7 @@ if __name__ == "__main__":
     data_times['tf_triples_linking'] = [tf_triples_linking_time]
 
     sql_creator.merge_with(predicate_sql_creator)
-    data_upload_sz, data_upload_time = sql_creator.upload_data_to_sql(sqlalchemy_engine=engine)
+    data_upload_sz, data_upload_time = sql_creator.upload_data_to_sql(drop_tables=False)
     total_time += data_upload_time
     data_sizes['data_upload'] = [data_upload_sz]
     data_times['data_upload'] = [data_upload_time]
