@@ -28,6 +28,8 @@ def get_byte_size(value):
         return 8
     elif type(value) == datetime:
         return 8
+    else:
+        raise ValueError('Unknown type')
 
 def get_sql_type_from_pyval(val, signed=True):
     pytype = type(val)
@@ -52,7 +54,7 @@ def get_sql_type_from_pyval(val, signed=True):
         elif byte_size <= 2**24-1:
             sqltype = 'MEDIUMTEXT'
             byte_size = 2**24-1
-        elif byte_size <= 2**32-1:
+        else: # <= 2**32-1
             sqltype = 'LONGTEXT'
             byte_size = 2**32-1
     else:
@@ -103,10 +105,10 @@ class TriplesToSQL:
         sqltype, byte_size = get_sql_type_from_pyval(val, signed=signed)
         return sqltype, byte_size
 
-    def xsd_2_mysql_type(self, property_name, o):
+    def xsd_2_mysql_type(self, property_name:URIRef, o):
         for _, _, value in self.g.triples((property_name, RDFS.range, None)):
             property_name_val = property_name.n3(self.g.namespace_manager)
-            val = value.n3(self.g.namespace_manager)
+            val = value.n3(self.g.namespace_manager) if isinstance(value, URIRef) else value
             if val not in self.data_types['types']:
                 self.data_types['types'].append(val)
                 self.data_types['values'].append(o)
@@ -140,13 +142,13 @@ class TriplesToSQL:
         p_n3 = re.sub(':|-', '_', p_n3)
         # print(property_name.n3(self.g.namespace_manager))
         for _, _, value in self.g.triples((property_name, RDFS.range, None)):
-            val = value.n3(self.g.namespace_manager)
+            val = value.n3(self.g.namespace_manager) if isinstance(value, URIRef) else value
             if val not in self.data_types['types']:
                 self.data_types['types'].append(val)
                 self.data_types['values'].append(o)
             if property_name not in self.all_property_types:
                 self.all_property_types[property_name] = value
-            if str(XSD) in str(value):
+            if str(XSD) in str(value) and isinstance(value, URIRef):
                 if isinstance(o, Literal):
                     o = xsd2py[value](o.toPython())
                 o = Literal(o, datatype=value, normalize=True)
@@ -170,7 +172,7 @@ class TriplesToSQL:
             return v
         return o
 
-    def sql_to_graph(self, sqlalchemy_engine):
+    def sql_to_graph(self, sqlalchemy_engine, verbose=False):
         engine = sqlalchemy_engine
         # get a connection
         conn = engine.connect()
@@ -179,23 +181,22 @@ class TriplesToSQL:
         ORDER BY _id;"""))
         
         for v in curr:
-            # print(type(v[0]))
-            new_v = [0, 0, 0]
+            new_v = []
             for i in range(3):
                 if 'http' in v[i] and '#' in v[i]:
                     ns_name = v[i].split('#')[0].split('/')[-1].split('.owl')[0]
                     ns_iri = v[i].split('#')[0]+'#'
                     if ns_iri not in self.ns.values():
                         self.ns[ns_name] = Namespace(v[i].split('#')[0]+'#')         
-                new_v[i] = URIRef(v[i].strip('<>')) if '#' in v[i] else Literal(v[i].strip('<>'))
-            self.g.add((new_v[0], new_v[1], new_v[2]))
-            # break
+                new_v.append(URIRef(v[i].strip('<>')) if '#' in v[i] else Literal(v[i].strip('<>')))
+            self.g.add(tuple(new_v))
         conn.commit()
         conn.close()
-        # print(json.dumps(self.ns, indent=4))
-        # print(len(self.ns))
+        if verbose:
+            print(json.dumps(self.ns, indent=4))
+            print(len(self.ns))
     
-    def mongo_triples_to_graph(self, collection):
+    def mongo_triples_to_graph(self, collection, verbose=False):
         self.reset_graph()
         py2xsd = {int: XSD.integer, float: XSD.float, str: XSD.string, bool: XSD.boolean, list: self.ns['soma'].array_double,
                   datetime: XSD.dateTime}
@@ -206,12 +207,12 @@ class TriplesToSQL:
                 v = [docs['s'], docs['p'], docs['o']]
             else:
                 raise ValueError('Missing Object value in triple')
-            new_v = [0, 0, 0]
+            new_v = []
             for i in range(3):
                 if not isinstance(v[i], str):
                     if isinstance(v[i], Decimal128):
                         v[i] = float(v[i].to_decimal())
-                    new_v[i] = Literal(v[i], datatype=py2xsd[type(v[i])])
+                    new_v.append(Literal(v[i], datatype=py2xsd[type(v[i])]))
                     continue
                 # make sure that the predicate uri is correctly formatted
                 if i == 1:
@@ -235,20 +236,20 @@ class TriplesToSQL:
                         assert v[i].startswith('http') and '#' in v[i], 'Property name must be a URI, not {}'.format(v[i])
                     else:
                         assert '/' not in v[i], 'Property name is not formatted correctly {}'.format(v[i])
-                new_v[i] = URIRef(v[i].strip('<>')) if '#' in v[i] and v[i].startswith('http') else Literal(v[i].strip('<>'))
-            self.g.add((new_v[0], new_v[1], new_v[2]))
-            # break
-        # print(json.dumps(self.ns, indent=4))
-        # print(len(self.ns))
+                new_v.append(URIRef(v[i].strip('<>')) if '#' in v[i] and v[i].startswith('http') else Literal(v[i].strip('<>')))
+            self.g.add(tuple(new_v))
+        if verbose:
+            print(json.dumps(self.ns, indent=4))
+            print(len(self.ns))
 
     def graph_to_dict(self, dump=False, graph=None):
         predicate_dict = {}
         g = self.g if graph is None else graph
         for s, p, o in g:
-            p_n3 = p.n3(g.namespace_manager)
+            p_n3 = p.n3(g.namespace_manager) if isinstance(p, URIRef) or isinstance(p, Literal) else p
             if p_n3 not in predicate_dict:
                 predicate_dict[p_n3] = {'s':[], 'o':[]}
-            s_n3 = s.n3(g.namespace_manager).strip('<>')
+            s_n3 = s.n3(g.namespace_manager).strip('<>') if isinstance(s, URIRef) or isinstance(s, Literal) else str(s)
             if "iai-kitchen.owl" in s_n3:
                 s_n3 = s_n3.replace("iai-kitchen.owl", "IAI-kitchen.owl")
             if '#' in s_n3 and s_n3.startswith('http'):
@@ -341,7 +342,7 @@ class TriplesToSQL:
 
 
 if __name__ == "__main__":
-    from restructure_triples_and_neems import json_to_sql, dict_to_sql
+    from restructure_triples_and_neems import json_to_sql, dict_to_sql, SQLCreator
 
     # Create TriplesToSQL object
     t2sql = TriplesToSQL()
@@ -359,7 +360,7 @@ if __name__ == "__main__":
     create_sql_from_graph_json = True
 
     # Create sqlalchemy engine
-    sql_url = os.environ['LOCAL_SQL_URL']
+    sql_url = os.environ['LOCAL_SQL_URL3']
     engine = create_engine(sql_url)
 
     if create_graph_from_sql:
@@ -386,7 +387,8 @@ if __name__ == "__main__":
     if create_sql_from_graph_dict:
         # Create a dictionary from the graph
         predicate_dict = t2sql.graph_to_dict(dump=True)
-        dict_to_sql(predicate_dict, engine,find_link_func=t2sql.find_link_in_graph_dict)
+        sql_creator = SQLCreator(engine)
+        dict_to_sql(predicate_dict, sql_creator)
         # print(json.dumps(list(zip(data_types['types'],data_types['values'])),sort_keys=True, indent=4))
         # print(json.dumps(all_property_types,sort_keys=True, indent=4))
         # print("number of datatybes = ", len(data_types['types']))

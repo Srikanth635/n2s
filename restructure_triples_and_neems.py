@@ -9,7 +9,7 @@ from datetime import datetime
 import re
 from time import time
 import sqlalchemy.pool as pool
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, Engine
 from sqlalchemy import text, exc
 from copy import deepcopy
 from orderedset import OrderedSet
@@ -21,6 +21,15 @@ import pickle
 
 # mongo_to_python_conversions
 def mon2py(val, name=None):
+    """Convert the value from mongo to python type
+
+    Args:
+        val ([mongo_type]): [value from mongo database to be converted to python type]
+        name ([str], optional): [For matching the template of conversion functions]. Defaults to None.
+
+    Returns:
+        [python_type]: [the converted value]
+    """
     if type(val) == Decimal128:
         return float(val.to_decimal())
     elif type(val) == ObjectId:
@@ -31,6 +40,14 @@ def mon2py(val, name=None):
         return val
 
 def py2sql(val, table_name, column_name, id=False, type2sql_func=None):
+    """Convert the value from python to sql type
+    Args:
+        val ([python_type]): [value from python to be converted to sql type]
+        table_name ([str]): [name of the table]
+        column_name ([str]): [name of the column]
+        id (bool, optional): [whether the column is an id column]. Defaults to False.
+        type2sql_func ([function], optional): [user function to convert the python type to sql type]. Defaults to None.
+    """
     val_type = type(val)
     if val_type == None:
         return None, None
@@ -39,28 +56,27 @@ def py2sql(val, table_name, column_name, id=False, type2sql_func=None):
     elif type2sql_func is not None:
         return type2sql_func(val, table_name+'.'+column_name)
     else:
-        ValueError(f"UNKOWN DATA TYPE {val_type}")
-
-def print_all_collection_types(collection):
-    single_doc = collection.find_one({})
-    def find_datatype(obj):
-        if type(obj) == dict:
-            print("DICT")
-            for k, v in obj.items():
-                print("key = ", k)
-                find_datatype(v)
-        elif np.iterable(obj) and type(obj) != str:
-            print("iterable of type ", type(obj))
-            for v in obj:
-                find_datatype(v)
-        else:
-            # obj = mon2py(obj)
-            print(type(obj))
-            print(obj)
-    find_datatype(single_doc)
+        raise ValueError(f"UNKOWN DATA TYPE {val_type}")
 
 class SQLCreator():
-    def __init__(self, engine=None, value_mapping_func=None, allowed_missing_percentage=5, tosql_func=None, verbose=False) -> None:
+    def __init__(self, engine:Engine, value_mapping_func=None, allowed_missing_percentage=5, tosql_func=None, verbose=False) -> None:
+        """A class to create SQL tables (from python data structures) and insert data into them
+
+        Args:
+            engine (Engine): [sqlalchemy engine]
+            value_mapping_func ([function], optional): [function to convert the value from mongo to python type]. Defaults to None.
+            allowed_missing_percentage (int, optional): [percentage of missing values allowed in a column]. Defaults to 5.
+            tosql_func ([function], optional): [function to convert the value from python to sql type]. Defaults to None.
+            verbose (bool, optional): [whether to print the progress]. Defaults to False.
+        
+        Example:
+            data = {'ID': [1, 2, 3], 'name': ['a', 'b', 'c'], 'age': [10, 20, 30]}
+            engine = create_engine('mysql+pymysql://username:password@localhost/test?charset=utf8mb4')
+            sql_creator = SQLCreator(engine, value_mapping_func=mon2py, tosql_func=py2sql)
+            sql_creator.find_relationships('data', data)
+            sql_creator.convert_to_sql('data', data)
+            sql_creator.upload_data_to_sql()
+        """
         self.engine = engine
         self.not_always_there = []
         self.sql_table_creation_cmds = OrderedSet()
@@ -80,14 +96,29 @@ class SQLCreator():
         self.sql_meta_data = self._get_sql_meta_data()
 
     def reset_data(self):
+        """Reset all data to empty .
+        """
         self.sql_table_creation_cmds = OrderedSet()
         self.data_to_insert = {}
     
     def merge_with(self, sql_creator):
+        """Merge another SQL creator .
+
+        Args:
+            sql_creator ([SQLCreator]): [sql_creator to be merged with]
+        """
         self.sql_table_creation_cmds.update(sql_creator.sql_table_creation_cmds)
         self.data_to_insert.update(sql_creator.data_to_insert)
     
     def insert_column_and_value(self, table_name, column_name, v, null_prev_rows=True):
+        """Insert a column and value into the data_to_insert dictionary
+        
+        Args:
+            table_name ([str]): [name of the table]
+            column_name ([str]): [name of the column]
+            v ([python_type]): [value to be inserted]
+            null_prev_rows (bool, optional): [whether to insert NULL values for previous rows]. Defaults to True.
+        """
         id = True if column_name in ['_id', 'neem_id'] else False
         data_type, byte_sz = py2sql(v, id=id, type2sql_func=self.tosql_func, table_name=table_name, column_name=column_name)     
         # Insertion
@@ -95,8 +126,8 @@ class SQLCreator():
         v = 'NULL' if v is None else v
         v = -1 if v == float('inf') else v
         if column_name not in self.data_to_insert[key].keys():
+            null, unique = True, False
             if data_type is not None:
-                null, unique = True, False
                 if id:
                     null = False
                     if column_name == '_id' and key == 'neems':
@@ -122,6 +153,16 @@ class SQLCreator():
                     self.sql_table_creation_cmds.add(f"ALTER TABLE {key} MODIFY COLUMN {column_name} {data_type};")
 
     def find_relationships(self, key, obj, parent_key=None):
+        """Find relationships between tables and columns,
+          some columns are not always present in the data, so they are not always present in the table,
+          so we need to create a new table for them. Also some lists contain only one item,
+          so we can remove the list and put the item in the table.
+
+        Args:
+            key ([str]): [name of the table]
+            obj ([dict]): [data to be inserted]
+            parent_key ([str], optional): [name of the parent object]. Defaults to None.
+        """
         if '#' in key:
             key = key.split('#')[1]
         if type(obj) == dict:
@@ -162,7 +203,10 @@ class SQLCreator():
                     self.find_relationships(k, v, key)
                 self.all_obj_keys[key][k] = {}
         elif np.iterable(obj) and type(obj) != str:
-            table_name = parent_key+'_'+key
+            if parent_key is not None:
+                table_name = parent_key+'_'+key
+            else:
+                table_name = key
             for v in obj:
                 if type(v) == dict:
                     if len(v) == 1:
@@ -179,6 +223,10 @@ class SQLCreator():
             self.all_obj_keys[key] = []
 
     def filter_null_tables(self):
+        """Filter all null tables in the database, if the number of null values in a column is greater than
+            the allowed_missing_percentage, then the column is removed from the table,
+            and a new table is created for it.
+        """
         for key, all_count in self.obj_key_count.items():
             total_count = all_count['key_count']
             for k, count in all_count.items():
@@ -191,7 +239,27 @@ class SQLCreator():
     def convert_to_sql(self, key, obj, parent_key=None,
                         key_iri='', parent_key_iri='', parent_table_name='',
                           parent_list=False, verbose=False):
-        
+        """Convert a nested dictionary containing dictionaries and lists into a SQL table,
+            by recursively traversing the dictionary and creating a table for each object,
+            and a column for each key in the object, and storing the data in a dictionary made 
+            of upper level keys as table names and lower level keys as column names.
+
+        Args:
+            key ([str]): [object/table name]
+            obj ([dict|list]): [data to be inserted]
+            parent_key ([str], optional): [parent object name]. Defaults to None.
+            key_iri (str, optional): [ontology iri of object]. Defaults to ''.
+            parent_key_iri (str, optional): [ontology iri of parent object]. Defaults to ''.
+            parent_table_name (str, optional): [the name of the parent table which is made from parent object]. Defaults to ''.
+            parent_list (bool, optional): [whether the parent object was a list or not]. Defaults to False.
+            verbose (bool, optional): [print on screen or not]. Defaults to False.
+
+        Raises:
+            ValueError: [description]
+
+        Returns:
+            [type]: [description]
+        """
         # This is the ID of the object/row in the sql table.
         ID = None
 
@@ -336,7 +404,7 @@ class SQLCreator():
                 self.add_fk(parent_table_name=parent_table_name, table_name=table_name, col_name=parent_key+'_ID')
             
             # element position index column
-            self.add_col(table_name, 'list_index', 'INT', 'NULL')
+            self.add_col(table_name, 'list_index', 'INT', NULL=True)
 
             # Insertion
             if table_name not in self.data_to_insert.keys():
@@ -345,6 +413,7 @@ class SQLCreator():
                 if parent_key is not None:
                     self.data_to_insert[table_name][parent_key+'_ID'] = []
                 self.data_to_insert[table_name]['list_index'] = []
+            parent_id = None
             if parent_key is not None:
                 parent_id = len(self.data_to_insert[parent_table_name]['ID'])
             i = 1
@@ -402,7 +471,15 @@ class SQLCreator():
                 obj = self.value_mapping_func(obj, name=parent_key_iri+parent_key)
         return obj, type(obj), np.iterable(obj) and type(obj) != str, ID
 
-    def link_column_to_exiting_table(self, table_name, col_name, type_name, indicies):
+    def link_column_to_exiting_table(self, table_name:str, col_name:str, type_name:str, indicies:list):
+        """Link a column to an existing table .
+
+        Args:
+            table_name ([str]): [The name of the table where the column exists.]
+            col_name ([str]): [The name of the column to link.]
+            type_name ([str]): [The name of the table to link to.]
+            indicies ([list]): [A list of indicies that correspond to the table to link to.]
+        """
         if np.iterable(indicies[0]):
             for i,j in indicies:
                 self.data_to_insert[table_name][col_name][i] = j
@@ -411,7 +488,15 @@ class SQLCreator():
         self.sql_table_creation_cmds.add(f"ALTER TABLE {table_name} MODIFY COLUMN {col_name} INT;")
         self.add_fk(parent_table_name=type_name, table_name=table_name, col_name=col_name)
     
-    def add_fk_column(self, parent_table_name, table_name, col_name, parent_col_name='ID'):
+    def add_fk_column(self, parent_table_name:str, table_name:str, col_name:str, parent_col_name='ID'):
+        """Add a column to the table and make it a foreign key to another column in another table.
+
+        Args:
+            parent_table_name (str): [the name of the table to link to]
+            table_name (str): [the name of the table to add the column to]
+            col_name (str): [the name of the column to add]
+            parent_col_name (str, optional): [the name of the column to link to in the parent table]. Defaults to 'ID'.
+        """
         self.add_col(table_name, col_name, 'INT')
         self.add_fk(parent_table_name, table_name, col_name, parent_col_name)
     
@@ -498,6 +583,7 @@ class SQLCreator():
                 first_type_name = None
                 multi_type = False
                 all_type_names = {}
+                type_name = None
                 for c_i, v in enumerate(col_values):
                     if v not in self.name_type: # Not a Named Individual
                         multi_type = True
@@ -558,7 +644,7 @@ class SQLCreator():
                         meta_data[row[0]] = []
                 if row[1] != 'ID':
                     meta_data[row[0]].append(row[1])
-            if verbose:
+            if self.verpose:
                 if result.rowcount == 0:
                     print("No data found")
                 else:
@@ -630,13 +716,11 @@ class SQLCreator():
     
 
 
-def neem_collection_to_sql(name, collection:list, sql_creator=None, neem_id=None, pbar=None, verbose=False):
+def neem_collection_to_sql(name, collection:list, sql_creator:SQLCreator, neem_id=None, pbar=None, verbose=False):
     if len(collection) == 0:
         if verbose:
             print(f"NO DOCUMENTS FOUND FOR {name} with neem_id {str(neem_id)}")
         return []
-    if sql_creator is None:
-        sql_creator = SQLCreator()
     meta_sql_creator = SQLCreator(engine=sql_creator.engine, verbose=verbose)
 
     if neem_id is not None:
@@ -669,6 +753,7 @@ def json_to_sql(top_table_name, json_data, sqlalachemy_engine, filter_doc=None, 
     funcs = [sql_creator.find_relationships, sql_creator.convert_to_sql]
     for f_i, func in enumerate(funcs):
         for doc in json_data:
+            name = None
             if n_doc == 0:
                 name = top_table_name
             elif filter_doc is not None:
@@ -695,7 +780,7 @@ def json_to_sql(top_table_name, json_data, sqlalachemy_engine, filter_doc=None, 
     sql_creator.reference_to_existing_table()
     if verbose:
         print("number_of_json_documents = ", n_doc)
-    sql_creator.upload_data_to_sql(drop_tables=drop_tables, sqlalchemy_engine=sqlalachemy_engine)
+    sql_creator.upload_data_to_sql(drop_tables=drop_tables, verbose=verbose)
 
 def dict_to_sql(data, sql_creator:SQLCreator, neem_id=None, pbar=None, verbose=False):
     neem_id_val = mon2py(deepcopy(neem_id)) if neem_id is not None else None
@@ -711,20 +796,23 @@ def dict_to_sql(data, sql_creator:SQLCreator, neem_id=None, pbar=None, verbose=F
 
 def link_predicate_tables(sql_creator:SQLCreator, use_pbar=True):
     data_to_insert_cp = deepcopy(sql_creator.data_to_insert)
+    pbar = None
+    total = 0
     if use_pbar:
         total = sum([len(v) for k, v in data_to_insert_cp.items()])
         pbar = tqdm(total=total, desc="Linking Predicate Tables", colour="#FFA500")
     for key, cols in data_to_insert_cp.items():
         for i, (col_name, col_data) in enumerate(cols.items()):
-                if use_pbar:
+                if pbar is not None:
                     pbar.update(1)
                 if type(col_data[0]) != str:
                     continue
                 sql_creator.sql_table_creation_cmds.add(f"CREATE INDEX IF NOT EXISTS {key+'_'+col_name+'_idx'} ON {key} ({col_name});")
-    if use_pbar:
+    pbar_time = 0
+    if pbar is not None:
         pbar_time = pbar.format_dict['elapsed']
         pbar.close()
-        return total, pbar_time
+    return total, pbar_time
 
 def link_tf_and_triples(data:dict, sql_creator:SQLCreator, use_pbar=True):
     time_start = np.array(sql_creator.data_to_insert['soma_hasIntervalBegin']['o'])
@@ -746,6 +834,7 @@ def link_tf_and_triples(data:dict, sql_creator:SQLCreator, use_pbar=True):
     e_idx_list = []
     s_idx_list = []
     stamp_idx = []
+    pbar = None
     if use_pbar:
         pbar = tqdm(total=len(time_end), desc="Linking TF and Triples", colour="#FFA500")
     for e_idx, e in enumerate(time_end):
@@ -786,16 +875,16 @@ def link_tf_and_triples(data:dict, sql_creator:SQLCreator, use_pbar=True):
                 stamp_idx.extend(res)
                 e_idx_list.extend([e_idx+1+latest_eidx]*len(res))
                 s_idx_list.extend([s_idx+1+latest_sidx]*len(res))
-        if use_pbar:
+        if pbar is not None:
             pbar.update(1)
-    if use_pbar:
+    pbar_time = 0
+    if pbar is not None:
         pbar_time = pbar.format_dict['elapsed']
         pbar.close()
     new_table_name = sql_creator.link_column_to_new_table('tf_header', 'soma_hasIntervalBegin', stamp_idx, s_idx_list)
     sql_creator.add_fk_column('soma_hasIntervalEnd', new_table_name, 'soma_hasIntervalEnd_ID')
     sql_creator.data_to_insert[new_table_name]['soma_hasIntervalEnd_ID'] = e_idx_list
-    if use_pbar:
-        return len(time_end), pbar_time
+    return len(time_end), pbar_time
 
 def mongo_collection_to_list_of_dicts(collection):
     return [doc for doc in collection.find({})]
