@@ -440,21 +440,27 @@ class SQLCreator():
             else:
                 sql_cmd += ';'
         with self.engine.connect() as conn:
-            result = conn.execute(text(sql_cmd))
-            result = result.fetchall()
-            result = [x[0] for x in result]
+            try:
+                result = conn.execute(text(sql_cmd))
+                result = result.fetchall()
+                result = [x[0] for x in result]
+            except:
+                result = []
         return result
     
     def get_max_id_from_sql(self, table_name:str, col_name='ID'):
         sql_cmd = f"SELECT MAX({col_name}) FROM {table_name};"
         with self.engine.connect() as conn:
-            result = conn.execute(text(sql_cmd))
-            result = result.fetchall()
-            result = [x[0] for x in result]
-            if len(result) == 0:
+            try:
+                result = conn.execute(text(sql_cmd))
+                result = result.fetchall()
+                result = [x[0] for x in result]
+                if len(result) == 0:
+                    result = 0
+                else:
+                    result = result[0]
+            except:
                 result = 0
-            else:
-                result = result[0]
         return result
         
     
@@ -545,7 +551,7 @@ class SQLCreator():
     def _get_sql_meta_data(self):
         stmt =text("SELECT TABLE_NAME, COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = N'test'")
         meta_data = {}
-        with engine.connect() as conn:
+        with self.engine.connect() as conn:
             result = conn.execute(stmt)
             for row in result:
                 if row[0] not in meta_data:
@@ -631,7 +637,7 @@ def neem_collection_to_sql(name, collection:list, sql_creator=None, neem_id=None
         return []
     if sql_creator is None:
         sql_creator = SQLCreator()
-    meta_sql_creator = SQLCreator()
+    meta_sql_creator = SQLCreator(engine=sql_creator.engine, verbose=verbose)
 
     if neem_id is not None:
         [doc.update({"neem_id":deepcopy(neem_id)}) for doc in collection]
@@ -794,7 +800,7 @@ def link_tf_and_triples(data:dict, sql_creator:SQLCreator, use_pbar=True):
 def mongo_collection_to_list_of_dicts(collection):
     return [doc for doc in collection.find({})]
 
-def link_and_upload(sql_creator:SQLCreator, predicate_sql_creator:SQLCreator, data_sizes, data_times, reset=False):
+def link_and_upload(sql_creator:SQLCreator, predicate_sql_creator:SQLCreator, data_sizes, data_times, reset=False, drop=False):
 
     total_time = 0
     data = sql_creator.data_to_insert
@@ -808,7 +814,7 @@ def link_and_upload(sql_creator:SQLCreator, predicate_sql_creator:SQLCreator, da
     data_times['tf_triples_linking'].append(tf_triples_linking_time)
 
     sql_creator.merge_with(predicate_sql_creator)
-    data_upload_sz, data_upload_time = sql_creator.upload_data_to_sql(drop_tables=False)
+    data_upload_sz, data_upload_time = sql_creator.upload_data_to_sql(drop_tables=drop)
     total_time += data_upload_time
     data_sizes['data_upload'].append(data_upload_sz)
     data_times['data_upload'].append(data_upload_time)
@@ -843,7 +849,7 @@ if __name__ == "__main__":
         print("Unable to connect to the server.")
 
     # Create SQL engine
-    sql_url = os.environ["LOCAL_SQL_URL"]
+    sql_url = os.environ["LOCAL_SQL_URL2"]
     engine = create_engine(sql_url)
 
     db = client.neems
@@ -865,7 +871,7 @@ if __name__ == "__main__":
         first_n_batches = 0
         start_from = 20
     else:
-        first_n_batches = 12
+        first_n_batches = 1
         start_from = 0
     meta_lod_batches = [meta_lod[i:i + batch_sz] for i in range(0, len(meta_lod), batch_sz)]
     first_n_batches = first_n_batches if first_n_batches > 0 else len(meta_lod_batches) - start_from
@@ -958,7 +964,7 @@ if __name__ == "__main__":
     total_time += total_creation_time
 
     if not append_to_sql:
-        link_and_upload_time = link_and_upload(sql_creator, predicate_sql_creator, data_sizes, data_times, reset=True)
+        link_and_upload_time = link_and_upload(sql_creator, predicate_sql_creator, data_sizes, data_times, reset=True, drop=True)
         total_time += link_and_upload_time
 
     data_stats = {'data_sizes':data_sizes, 'data_times':data_times}
