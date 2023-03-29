@@ -793,6 +793,31 @@ def link_tf_and_triples(data:dict, sql_creator:SQLCreator, use_pbar=True):
 
 def mongo_collection_to_list_of_dicts(collection):
     return [doc for doc in collection.find({})]
+
+def link_and_upload(sql_creator:SQLCreator, predicate_sql_creator:SQLCreator, data_sizes, data_times, reset=False):
+
+    total_time = 0
+    data = sql_creator.data_to_insert
+    predicate_linking_sz, predicate_linking_time = link_predicate_tables(predicate_sql_creator)
+    total_time += predicate_linking_time
+    data_sizes['predicate_linking'].append(predicate_linking_sz)
+    data_times['predicate_linking'].append(predicate_linking_time)
+    tf_triples_linking_sz, tf_triples_linking_time = link_tf_and_triples(data, predicate_sql_creator)
+    total_time += tf_triples_linking_time
+    data_sizes['tf_triples_linking'].append(tf_triples_linking_sz)
+    data_times['tf_triples_linking'].append(tf_triples_linking_time)
+
+    sql_creator.merge_with(predicate_sql_creator)
+    data_upload_sz, data_upload_time = sql_creator.upload_data_to_sql(drop_tables=False)
+    total_time += data_upload_time
+    data_sizes['data_upload'].append(data_upload_sz)
+    data_times['data_upload'].append(data_upload_time)
+
+    if reset:
+        sql_creator.reset_data()
+        predicate_sql_creator.reset_data()
+
+    return total_time
     
 
 if __name__ == "__main__":
@@ -830,21 +855,27 @@ if __name__ == "__main__":
     # Adding meta data
     meta = db.meta
     meta_lod = mongo_collection_to_list_of_dicts(meta)
-    neem_collection_to_sql("neems",
-                      meta_lod,
-                      sql_creator=sql_creator, verbose=verbose)
+    if not append_to_sql:
+        neem_collection_to_sql("neems",
+                          meta_lod,
+                          sql_creator=sql_creator, verbose=verbose)
     meta_lod = list(reversed(meta_lod))
-    batch_sz = 5
-    first_n_batches = 12
-    start_from = 0
+    batch_sz = 4
+    if append_to_sql:
+        first_n_batches = 0
+        start_from = 20
+    else:
+        first_n_batches = 12
+        start_from = 0
     meta_lod_batches = [meta_lod[i:i + batch_sz] for i in range(0, len(meta_lod), batch_sz)]
+    first_n_batches = first_n_batches if first_n_batches > 0 else len(meta_lod_batches) - start_from
     coll_names = ['tf', 'triples', 'annotations', 'inferred']
     verification_time = 0
     total_time = 0
     tf_len = []
     for batch_idx, batch in enumerate(meta_lod_batches[start_from:start_from+first_n_batches]):
 
-        verification = tqdm(total=batch_sz*4, desc=f"Verifying Data (batch {batch_idx})", colour='#FFA500')
+        verification = tqdm(total=batch_sz*4, desc=f"Verifying Data (batch {batch_idx+start_from})", colour='#FFA500')
 
         for d_i, doc in enumerate(batch):
 
@@ -869,11 +900,13 @@ if __name__ == "__main__":
     total_tf_creation_time = 0
     total_triples_creation_time = 0
     data_sizes = {c:[] for c in coll_names}
+    data_sizes.update({'predicate_linking':[], 'tf_triples_linking':[], 'data_upload':[]})
     data_times = {c:[] for c in coll_names}
+    data_times.update({'predicate_linking':[], 'tf_triples_linking':[], 'data_upload':[]})
     for batch_idx, batch in enumerate(meta_lod_batches[start_from:start_from+first_n_batches]):
         all_docs = 0
         collections = {}
-        meta_data = tqdm(total=batch_sz*4, desc=f"Collecting & Restructuring Data (batch {batch_idx})", colour='#FFA500')
+        meta_data = tqdm(total=batch_sz*4, desc=f"Collecting & Restructuring Data (batch {batch_idx+start_from})", colour='#FFA500')
         for d_i, doc in enumerate(batch):
 
             id = str(doc['_id'])
@@ -916,35 +949,27 @@ if __name__ == "__main__":
         total_creation_time += all_neems_pbar.format_dict['elapsed']
         all_neems_pbar.close()
 
+        if append_to_sql:
+            link_and_upload_time = link_and_upload(sql_creator, predicate_sql_creator, data_sizes, data_times, reset=True)
+            total_time += link_and_upload_time
+
     client.close()
     total_time += total_meta_time
     total_time += total_creation_time
 
-    data = sql_creator.data_to_insert
-   
-    predicate_linking_sz, predicate_linking_time = link_predicate_tables(predicate_sql_creator)
-    total_time += predicate_linking_time
-    data_sizes['predicate_linking'] = [predicate_linking_sz]
-    data_times['predicate_linking'] = [predicate_linking_time]
-    tf_triples_linking_sz, tf_triples_linking_time = link_tf_and_triples(data, predicate_sql_creator)
-    total_time += tf_triples_linking_time
-    data_sizes['tf_triples_linking'] = [tf_triples_linking_sz]
-    data_times['tf_triples_linking'] = [tf_triples_linking_time]
+    if not append_to_sql:
+        link_and_upload_time = link_and_upload(sql_creator, predicate_sql_creator, data_sizes, data_times, reset=True)
+        total_time += link_and_upload_time
 
-    sql_creator.merge_with(predicate_sql_creator)
-    data_upload_sz, data_upload_time = sql_creator.upload_data_to_sql(drop_tables=False)
-    total_time += data_upload_time
-    data_sizes['data_upload'] = [data_upload_sz]
-    data_times['data_upload'] = [data_upload_time]
     data_stats = {'data_sizes':data_sizes, 'data_times':data_times}
     print("Verification Time = ", verification_time)
     print("Meta Time = ", total_meta_time)
     print("TF Creation Time = ", total_tf_creation_time)
     print("Triples Creation Time = ", total_triples_creation_time)
     print("Creation Time = ", total_creation_time)
-    print("Predicate Linking Time = ", predicate_linking_time)
-    print("TF Triples Linking Time = ", tf_triples_linking_time)
-    print("Data Upload Time = ", data_upload_time)
+    print("Predicate Linking Time = ", sum(data_times['predicate_linking']))
+    print("TF Triples Linking Time = ", sum(data_times['tf_triples_linking']))
+    print("Data Upload Time = ", sum(data_times['data_upload']))
     print("Total Time = ", total_time)
 
     with open('data_stats.pickle', 'wb') as f:
