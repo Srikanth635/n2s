@@ -1,5 +1,6 @@
 import os
 from pymongo import MongoClient
+from pymongo.collection import Collection
 from pymongo.cursor import CursorType
 from bson.objectid import ObjectId
 from bson.decimal128 import Decimal128
@@ -9,7 +10,7 @@ from datetime import datetime
 import re
 from time import time
 import sqlalchemy.pool as pool
-from sqlalchemy import create_engine, Engine
+from sqlalchemy import create_engine, Engine, Connection
 from sqlalchemy import text, exc
 from copy import deepcopy
 from orderedset import OrderedSet
@@ -17,14 +18,16 @@ from triples_to_sql import TriplesToSQL, get_byte_size, get_sql_type_from_pyval
 from tqdm import tqdm
 import argparse
 import pickle
+from typing import Optional, Callable, Union, Tuple, List, Dict
+
 
 
 # mongo_to_python_conversions
-def mon2py(val, name=None):
+def mon2py(val: object, name: Optional[str]=None):
     """Convert the value from mongo to python type
 
     Args:
-        val ([mongo_type]): [value from mongo database to be converted to python type]
+        val ([object]): [value from mongo database to be converted to python type]
         name ([str], optional): [For matching the template of conversion functions]. Defaults to None.
 
     Returns:
@@ -39,14 +42,22 @@ def mon2py(val, name=None):
     else:
         return val
 
-def py2sql(val, table_name, column_name, id=False, type2sql_func=None):
+def py2sql(val:object,
+            table_name:str,
+              column_name:str,
+                id: Optional[bool]=False,
+                  type2sql_func: Optional[Callable[[object, str], Tuple[str, int]]]=None) -> Tuple[Optional[str], Optional[int]]:
     """Convert the value from python to sql type
     Args:
-        val ([python_type]): [value from python to be converted to sql type]
+        val ([object]): [value from python to be converted to sql type]
         table_name ([str]): [name of the table]
         column_name ([str]): [name of the column]
         id (bool, optional): [whether the column is an id column]. Defaults to False.
-        type2sql_func ([function], optional): [user function to convert the python type to sql type]. Defaults to None.
+        type2sql_func ([callable], optional): [user function to convert the python type to sql type]. Defaults to None.
+    
+    Returns:
+        [str]: [sql type]
+        [int]: [byte size of the type]
     """
     val_type = type(val)
     if val_type == None:
@@ -59,23 +70,27 @@ def py2sql(val, table_name, column_name, id=False, type2sql_func=None):
         raise ValueError(f"UNKOWN DATA TYPE {val_type}")
 
 class SQLCreator():
-    def __init__(self, engine:Engine, value_mapping_func=None, allowed_missing_percentage=5, tosql_func=None, verbose=False) -> None:
+    def __init__(self, engine:Engine,
+                  value_mapping_func: Optional[Callable[[object, Optional[str]], object]]=None,
+                  allowed_missing_percentage: Optional[int]=5,
+                  tosql_func: Optional[Callable[[object, str], Tuple[str, int]]]=None,
+                  verbose: Optional[bool]=False) -> None:
         """A class to create SQL tables (from python data structures) and insert data into them
 
         Args:
             engine (Engine): [sqlalchemy engine]
-            value_mapping_func ([function], optional): [function to convert the value from mongo to python type]. Defaults to None.
+            value_mapping_func ([callable], optional): [function to convert the value from mongo to python type]. Defaults to None.
             allowed_missing_percentage (int, optional): [percentage of missing values allowed in a column]. Defaults to 5.
-            tosql_func ([function], optional): [function to convert the value from python to sql type]. Defaults to None.
+            tosql_func ([callable], optional): [function to convert the value from python to sql type]. Defaults to None.
             verbose (bool, optional): [whether to print the progress]. Defaults to False.
         
         Example:
-            data = {'ID': [1, 2, 3], 'name': ['a', 'b', 'c'], 'age': [10, 20, 30]}
-            engine = create_engine('mysql+pymysql://username:password@localhost/test?charset=utf8mb4')
-            sql_creator = SQLCreator(engine, value_mapping_func=mon2py, tosql_func=py2sql)
-            sql_creator.find_relationships('data', data)
-            sql_creator.convert_to_sql('data', data)
-            sql_creator.upload_data_to_sql()
+            >>> data = {'ID': [1, 2, 3], 'name': ['a', 'b', 'c'], 'age': [10, 20, 30]}
+            >>> engine = create_engine('mysql+pymysql://username:password@localhost/test?charset=utf8mb4')
+            >>> sql_creator = SQLCreator(engine, value_mapping_func=mon2py, tosql_func=py2sql)
+            >>> sql_creator.find_relationships('data', data)
+            >>> sql_creator.convert_to_sql('data', data)
+            >>> sql_creator.upload_data_to_sql()
         """
         self.engine = engine
         self.not_always_there = []
@@ -95,13 +110,13 @@ class SQLCreator():
         self.verpose = verbose
         self.sql_meta_data = self._get_sql_meta_data()
 
-    def reset_data(self):
+    def reset_data(self) -> None:
         """Reset all data to empty .
         """
         self.sql_table_creation_cmds = OrderedSet()
         self.data_to_insert = {}
     
-    def merge_with(self, sql_creator):
+    def merge_with(self, sql_creator: 'SQLCreator') -> None:
         """Merge another SQL creator .
 
         Args:
@@ -110,7 +125,7 @@ class SQLCreator():
         self.sql_table_creation_cmds.update(sql_creator.sql_table_creation_cmds)
         self.data_to_insert.update(sql_creator.data_to_insert)
     
-    def insert_column_and_value(self, table_name, column_name, v, null_prev_rows=True):
+    def insert_column_and_value(self, table_name:str, column_name:str, v: object, null_prev_rows=True) -> None:
         """Insert a column and value into the data_to_insert dictionary
         
         Args:
@@ -132,7 +147,7 @@ class SQLCreator():
                     null = False
                     if column_name == '_id' and key == 'neems':
                         unique = True
-            self.add_col(key, column_name, data_type, NULL=null, UNIQUE=unique)
+            self.add_col(key, column_name, str(data_type), ISNULL=null, ISUNIQUE=unique)
             if null_prev_rows:
                 # The NULL values here are for previous rows that did not have a value for this column
                 n_rows = len(self.data_to_insert[key]['ID']) - 1
@@ -152,7 +167,7 @@ class SQLCreator():
                     self.data_bytes[key][column_name] = byte_sz
                     self.sql_table_creation_cmds.add(f"ALTER TABLE {key} MODIFY COLUMN {column_name} {data_type};")
 
-    def find_relationships(self, key, obj, parent_key=None):
+    def find_relationships(self, key:str, obj:dict or list, parent_key: Optional[str]=None) -> None:
         """Find relationships between tables and columns,
           some columns are not always present in the data, so they are not always present in the table,
           so we need to create a new table for them. Also some lists contain only one item,
@@ -222,7 +237,7 @@ class SQLCreator():
         else:
             self.all_obj_keys[key] = []
 
-    def filter_null_tables(self):
+    def filter_null_tables(self) -> None:
         """Filter all null tables in the database, if the number of null values in a column is greater than
             the allowed_missing_percentage, then the column is removed from the table,
             and a new table is created for it.
@@ -236,9 +251,9 @@ class SQLCreator():
                     if ((1 - count/total_count) * 100) > self.allowed_missing_percentage:
                         self.not_always_there.append(key+'.'+k)  
 
-    def convert_to_sql(self, key, obj, parent_key=None,
-                        key_iri='', parent_key_iri='', parent_table_name='',
-                          parent_list=False, verbose=False):
+    def convert_to_sql(self, key:str, obj: object, parent_key: Optional[str]=None,
+                        key_iri: Optional[str]='', parent_key_iri: Optional[str]='', parent_table_name: Optional[str]='',
+                          parent_list: Optional[bool]=False, verbose: Optional[bool]=False) -> Tuple[object, object, bool, Optional[int]]:
         """Convert a nested dictionary containing dictionaries and lists into a SQL table,
             by recursively traversing the dictionary and creating a table for each object,
             and a column for each key in the object, and storing the data in a dictionary made 
@@ -254,11 +269,11 @@ class SQLCreator():
             parent_list (bool, optional): [whether the parent object was a list or not]. Defaults to False.
             verbose (bool, optional): [print on screen or not]. Defaults to False.
 
-        Raises:
-            ValueError: [description]
-
         Returns:
-            [type]: [description]
+            [object]: [The provided object]
+            [object]: [the type of the object]
+            [bool]: [whether object is iterable or not]
+            [int]: [the ID of the object in the sql table]
         """
         # This is the ID of the object/row in the sql table.
         ID = None
@@ -275,9 +290,9 @@ class SQLCreator():
         # This is for making sure that this string object is not actually and ontology defined array.
         # if it is an ontology defined array, then a mapping is performed on the string to convert it to a list.
         mapped_already = False
-        if parent_key is not None and type(obj) == str and parent_key_iri != '' and '_' not in parent_key:
+        if parent_key is not None and isinstance(obj,str) and parent_key_iri != ''  and parent_key_iri is not None and '_' not in parent_key:
             if ' ' in obj or ',' in obj:
-                obj = self.value_mapping_func(obj, name=parent_key_iri+parent_key)
+                obj = self.value_mapping_func(obj, parent_key_iri+parent_key)
                 mapped_already = True
 
         if type(obj) == dict:
@@ -314,7 +329,7 @@ class SQLCreator():
             latest_id = 0
             if parent_list:
                 if table_name in self.sql_meta_data:
-                    res = self.get_id_from_sql(table_name, obj, max_id=True)
+                    res = self.get_id_from_sql(table_name, obj)
                     if len(res) != 0:
                         ID = res[-1]
                         return obj, type(obj), np.iterable(obj) and type(obj) != str, ID
@@ -380,6 +395,7 @@ class SQLCreator():
                             self.add_fk(parent_table_name=table_name, table_name=k_table_name)
                 else:
                     # Values are inserted here for non nested columns (i.e. non iterable columns except for str)
+                    assert isinstance(v,(str, int, float, bool, type(None), datetime))
                     self.insert_column_and_value(table_name, k, v)
 
             max_len = max([len(v) for k, v in self.data_to_insert[table_name].items()])
@@ -401,10 +417,11 @@ class SQLCreator():
             self.sql_table_creation_cmds.add(id_col_string)
 
             if parent_key is not None:
+                assert parent_table_name is not None
                 self.add_fk(parent_table_name=parent_table_name, table_name=table_name, col_name=parent_key+'_ID')
             
             # element position index column
-            self.add_col(table_name, 'list_index', 'INT', NULL=True)
+            self.add_col(table_name, 'list_index', 'INT', ISNULL=True)
 
             # Insertion
             if table_name not in self.data_to_insert.keys():
@@ -468,10 +485,10 @@ class SQLCreator():
             if not mapped_already:
                 parent_key_iri = "" if parent_key_iri is None else parent_key_iri
                 parent_key = "" if parent_key is None else parent_key
-                obj = self.value_mapping_func(obj, name=parent_key_iri+parent_key)
+                obj = self.value_mapping_func(obj, parent_key_iri+parent_key)
         return obj, type(obj), np.iterable(obj) and type(obj) != str, ID
 
-    def link_column_to_exiting_table(self, table_name:str, col_name:str, type_name:str, indicies:list):
+    def link_column_to_exiting_table(self, table_name:str, col_name:str, type_name:str, indicies:list) -> None:
         """Link a column to an existing table .
 
         Args:
@@ -488,7 +505,7 @@ class SQLCreator():
         self.sql_table_creation_cmds.add(f"ALTER TABLE {table_name} MODIFY COLUMN {col_name} INT;")
         self.add_fk(parent_table_name=type_name, table_name=table_name, col_name=col_name)
     
-    def add_fk_column(self, parent_table_name:str, table_name:str, col_name:str, parent_col_name='ID'):
+    def add_fk_column(self, parent_table_name:str, table_name:str, col_name:str, parent_col_name='ID') -> None:
         """Add a column to the table and make it a foreign key to another column in another table.
 
         Args:
@@ -500,23 +517,58 @@ class SQLCreator():
         self.add_col(table_name, col_name, 'INT')
         self.add_fk(parent_table_name, table_name, col_name, parent_col_name)
     
-    def add_fk(self, parent_table_name, table_name, col_name='ID', parent_col_name='ID'):
+    def add_fk(self, parent_table_name:str, table_name:str, col_name: Optional[str]='ID', parent_col_name: Optional[str]='ID') -> None:
+        """Add a foreign key to a column in a table.
+
+        Args:
+            parent_table_name (str): [the name of the table to link to]
+            table_name (str): [the name of the table to add the column to]
+            col_name (str, optional): [the name of the column to add]. Defaults to 'ID'.
+            parent_col_name (str, optional): [the name of the column to link to in the parent table]. Defaults to 'ID'.
+        """
         col_string = f"ALTER TABLE {table_name} ADD FOREIGN KEY IF NOT EXISTS ({col_name}) REFERENCES {parent_table_name}({parent_col_name});"
         self.sql_table_creation_cmds.add(col_string)
     
-    def add_col(self, table_name, col_name, col_type, NULL=True, KEY='', UNIQUE=False, DEFAULT=None, AUTO_INCREMENT=False):
-        NULL = ' NOT NULL' if not NULL else ' NULL'
-        UNIQUE = ' UNIQUE' if UNIQUE else ''
-        AUTO_INCREMENT = ' AUTO_INCREMENT' if AUTO_INCREMENT else ''
+    def add_col(self, table_name:str, col_name:str, col_type:str,
+                 ISNULL: Optional[bool]=True,
+                 KEY: Optional[str]='',
+                 ISUNIQUE: Optional[bool]=False,
+                 DEFAULT: Optional[int or float or str or datetime]=None,
+                 AUTO_INCREMENT: Optional[bool]=False) -> None:
+        """Add a column to a table .
+
+        Args:
+            table_name ([str]): [The name of the table to add the column to.]
+            col_name ([str]): [The name of the column to add.]
+            col_type ([str]): [The sql data type of the column to add.]
+            NULL (bool, optional): [Whether the column values can be NULL or not]. Defaults to True.
+            KEY (str, optional): [One of [PRIMARY KEY, FOREIGN KEY]]. Defaults to ''.
+            UNIQUE (bool, optional): [Whether the column values should be unique (i.e. no dublicate values exist)]. Defaults to False.
+            DEFAULT ([int or float or str or datetime], optional): [The default value for the column element if no value was provided]. Defaults to None.
+            AUTO_INCREMENT (bool, optional): [Whether this column values are automatically incremented or not]. Defaults to False.
+        """
+        NULL = ' NOT NULL' if not ISNULL else ' NULL'
+        UNIQUE = ' UNIQUE' if ISUNIQUE else ''
+        AUTOINCREMENT = ' AUTO_INCREMENT' if AUTO_INCREMENT else ''
         if KEY != '':
             KEY = f' {KEY}'
-        col_string = f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS {col_name} {col_type}{NULL}{KEY}{AUTO_INCREMENT}{UNIQUE}"
+        col_string = f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS {col_name} {col_type}{NULL}{KEY}{AUTOINCREMENT}{UNIQUE}"
         if DEFAULT is not None:
             col_string += f" DEFAULT {DEFAULT}"
         col_string += ';'
         self.sql_table_creation_cmds.add(col_string)
     
-    def get_id_from_sql(self, table_name:str, col_value_pairs:dict, max_id=False):
+    def get_id_from_sql(self, table_name:str, col_value_pairs:dict) -> list:
+        """Retrieve a list of ids from a table .
+
+        Args:
+            table_name (str): [The name of the table to retrieve the ids from.]
+            col_value_pairs (dict): [each pair is a column name and a value to search for in that column.]
+
+        Returns:
+            [list]: [list of ids that match the search criteria.]
+            
+        """
         sql_cmd = f"SELECT ID FROM {table_name} WHERE "
         for i, (k, v) in enumerate(col_value_pairs.items()):
             sql_cmd += f"{k} = '{v}'"
@@ -533,7 +585,16 @@ class SQLCreator():
                 result = []
         return result
     
-    def get_max_id_from_sql(self, table_name:str, col_name='ID'):
+    def get_max_id_from_sql(self, table_name:str, col_name: Optional[str]='ID') -> int:
+        """Retrieve the maximum id from a table .
+
+        Args:
+            table_name (str): [The name of the table to retrieve the ids from.]
+            col_name (str, optional): [The name of the column to retrieve the maximum id from]. Defaults to 'ID'.
+
+        Returns:
+            [int]: [the maximum id in the table, or 0 if the table is empty.]
+        """
         sql_cmd = f"SELECT MAX({col_name}) FROM {table_name};"
         with self.engine.connect() as conn:
             try:
@@ -548,8 +609,18 @@ class SQLCreator():
                 result = 0
         return result
         
-    
-    def link_column_to_new_table(self, parent_table_name, type_name, instance_table_indicies, original_table_indicies):
+    def link_column_to_new_table(self, parent_table_name:str, type_name:str, instance_table_indicies:list, original_table_indicies:list) -> str:
+        """Link a column to a new table.
+
+        Args:
+            parent_table_name (str): [the name of one of the tables to link to]
+            type_name (str): [the name of the other table to link to]
+            instance_table_indicies (list): [the indicies of the instances in the parent table]
+            original_table_indicies (list): [the indicies of the original instances in the type table]
+
+        Returns:
+            [str]: [the name of the new table.]
+        """
         # Creation
         new_table_name = parent_table_name+'_'+type_name
         table_string = f"CREATE TABLE IF NOT EXISTS {parent_table_name+'_'+type_name} (ID INT AUTO_INCREMENT NOT NULL PRIMARY KEY);"
@@ -569,7 +640,10 @@ class SQLCreator():
         return new_table_name
 
     
-    def reference_to_existing_table(self):
+    def _reference_to_existing_table(self) -> None:
+        """Reference to existing table, this is used to link a column to a table that already exists and 
+        have the values of the column be the ids of the instances in the other table.
+        """
         data_to_insert_cp = deepcopy(self.data_to_insert)
         for table_name, cols in data_to_insert_cp.items():
             for col_name, col_values in cols.items():
@@ -606,7 +680,7 @@ class SQLCreator():
 
                 # if self_reference or not named_individual:
                 #     continue                     
-                if not multi_type:
+                if not multi_type and type_name is not None:
                     self.link_column_to_exiting_table(table_name, col_name, type_name, all_type_names[type_name]['original_table_indicies'])
                 else:
                     for type_name, indicies in all_type_names.items():
@@ -614,13 +688,19 @@ class SQLCreator():
                                                        indicies['instance_table_indicies'],
                                                          indicies['original_table_indicies'])
 
-    def get_insert_rows_commands(self, columns_to_insert=None, max_rows_per_cmd=100000):
+    def get_insert_rows_commands(self, max_rows_per_cmd: Optional[int]=100000) -> list:
+        """Get the SQL commands to insert, by restructuring the data_to_insert dictionary,
+        to be a list of commands, each command containing a maximum of max_rows_per_cmd table rows to insert.
+
+        Args:
+            max_rows_per_cmd (int, optional): [description]. Defaults to 100000.
+
+        Returns:
+            [list]: [the sql commands]
+        """
         sql_insert_commands = []
+        assert isinstance(max_rows_per_cmd, int)
         for key, rows_dict in self.data_to_insert.items():
-            
-            if columns_to_insert is not None:
-                cols = columns_to_insert[key]
-                cols_str = str(cols).strip('[]')
             cols = tuple(rows_dict.keys())
             cols_str = re.sub("(')","",str(cols))
             rows_list = list(zip(*tuple(rows_dict.values())))
@@ -634,7 +714,12 @@ class SQLCreator():
                 sql_insert_commands.append(f"INSERT INTO {key} {cols_str} VALUES {all_rows_str};")
         return sql_insert_commands
     
-    def _get_sql_meta_data(self):
+    def _get_sql_meta_data(self) -> dict:
+        """Get the names of the tables and columns from the database
+
+        Returns:
+            [dict]: [The names of the tables and the columns in each table that are currently in the database]
+        """
         stmt =text("SELECT TABLE_NAME, COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = N'test'")
         meta_data = {}
         with self.engine.connect() as conn:
@@ -651,16 +736,26 @@ class SQLCreator():
                     print(result.rowcount, "row(s) found")
             return meta_data
 
-    def upload_data_to_sql(self, drop_tables=True, verbose=False):
+    def upload_data_to_sql(self, drop_tables: Optional[bool] = True, verbose: Optional[bool] = False) -> Tuple[int, float]:
+        """Upload the data to the database, this will create the tables and insert the data.
+        
+        Args:
+            drop_tables (bool, optional): [If True, will drop the tables before creating them]. Defaults to True.
+            verbose (bool, optional): [If True, will print the time taken to convert dictionary data to commands]. Defaults to False.
+
+        Returns:
+            [int]: [data size in number of sql commands]
+            [float]: [time taken in number of seconds]
+        """
 
         # Create a connection
         conn = self.engine.connect()
 
         # Get the inertion cmds
-        insertion_time_s = time()
+        conversion_time_s = time()
         sql_insert_cmds = self.get_insert_rows_commands()
         if verbose:
-            print("Insertion Time = ", time() - insertion_time_s)
+            print("Dicitionary to Commands Conversion Time = ", time() - conversion_time_s)
 
         if drop_tables:
             self._drop_tables(self.data_to_insert, conn)
@@ -684,7 +779,13 @@ class SQLCreator():
         conn.close()
         return len(sql_insert_cmds) + len(self.sql_table_creation_cmds), pbar_time
 
-    def _drop_tables(self, data, conn):
+    def _drop_tables(self, data:dict, conn:Connection) -> None:
+        """Drop all tables in the database that also is in the given data.
+
+        Args:
+            data ([type]): [description]
+            conn ([type]): [description]
+        """
         conn.execute(text("SET FOREIGN_KEY_CHECKS=0;"))
         for key in data.keys():
             if '*' in key:
@@ -696,7 +797,13 @@ class SQLCreator():
             conn.execute(text(f"drop table if exists {key};"))
         conn.execute(text("SET FOREIGN_KEY_CHECKS=1;"))
 
-    def _execute_cmds(self, sql_cmds, conn, pbar=None):
+    def _execute_cmds(self, sql_cmds:list, conn:Connection, pbar: Optional[tqdm] = None) -> None:
+        """Execute the given sql commands.
+
+        Args:
+            sql_cmds ([type]): [description]
+            conn ([type]): [description]    
+        """
         for cmd in sql_cmds:
             if '*' in cmd:
                 cmd = re.sub("(\*)","_star", cmd)
@@ -716,11 +823,21 @@ class SQLCreator():
     
 
 
-def neem_collection_to_sql(name, collection:list, sql_creator:SQLCreator, neem_id=None, pbar=None, verbose=False):
+def neem_collection_to_sql(name: str, collection: list, sql_creator: SQLCreator,
+                            neem_id: Optional[ObjectId]=None, pbar: Optional[List[tqdm]]=None, verbose: Optional[bool]=False) -> None:
+    """Convert a collection of documents to sql commands.
+    
+    Args:
+        name (str): [The name of the collection]
+        collection (list): [The collection of documents]
+        sql_creator (SQLCreator): [The sql creator object]
+        neem_id (ObjectId, optional): [The neem_id of the collection if the collection belongs to a neem]. Defaults to None.
+        pbar (tqdm, optional): [The progress bar]. Defaults to None.
+        verbose (bool, optional): [If True, will print the time taken to convert dictionary data to commands]. Defaults to False.
+    """
     if len(collection) == 0:
         if verbose:
             print(f"NO DOCUMENTS FOUND FOR {name} with neem_id {str(neem_id)}")
-        return []
     meta_sql_creator = SQLCreator(engine=sql_creator.engine, verbose=verbose)
 
     if neem_id is not None:
@@ -747,7 +864,26 @@ def neem_collection_to_sql(name, collection:list, sql_creator:SQLCreator, neem_i
         sql_creator.add_fk("neems", name, "neem_id", parent_col_name="_id")
 
 
-def json_to_sql(top_table_name, json_data, sqlalachemy_engine, filter_doc=None, drop_tables=True, value_mapping_func=None, pbar=None, verbose=False):
+def json_to_sql(top_table_name:str,
+                json_data:list,
+                sqlalachemy_engine:Engine,
+                filter_doc: Optional[Callable[[dict], Tuple[str, dict, str]]]=None,
+                drop_tables: Optional[bool]=True,
+                value_mapping_func: Optional[Callable[[object, Optional[str]], object]]=None,
+                pbar: Optional[tqdm]=None,
+                verbose: Optional[bool]=False) -> None:
+    """Convert a json file to sql commands.
+
+    Args:
+        top_table_name (str): [The name of the top table]
+        json_data (list): [The json data]
+        sqlalachemy_engine (Engine): [The sql alchemy engine]
+        filter_doc (Callable[[dict], Tuple[str, dict, str]], optional): [A function that takes a document and returns a tuple of the name of the table, the document, and the iri of the document]. Defaults to None.
+        drop_tables (bool, optional): [If True, will drop all tables in the database that also is in the given data]. Defaults to True.
+        value_mapping_func (Callable[[object, Optional[str]], object], optional): [A function that takes a value and the name of the column and returns the value to be inserted into the database]. Defaults to None.
+        pbar (tqdm, optional): [The progress bar]. Defaults to None.
+        verbose (bool, optional): [If True, will print the number of documents]. Defaults to False.
+    """
     n_doc = 0
     sql_creator = SQLCreator(value_mapping_func=value_mapping_func, engine=sqlalachemy_engine)
     funcs = [sql_creator.find_relationships, sql_creator.convert_to_sql]
@@ -777,30 +913,54 @@ def json_to_sql(top_table_name, json_data, sqlalachemy_engine, filter_doc=None, 
             n_doc += 1
         if f_i == 0:
             sql_creator.filter_null_tables()
-    sql_creator.reference_to_existing_table()
+    sql_creator._reference_to_existing_table()
     if verbose:
         print("number_of_json_documents = ", n_doc)
     sql_creator.upload_data_to_sql(drop_tables=drop_tables, verbose=verbose)
 
-def dict_to_sql(data, sql_creator:SQLCreator, neem_id=None, pbar=None, verbose=False):
+def dict_to_sql(data: dict,
+                sql_creator:SQLCreator,
+                neem_id: Optional[ObjectId]=None,
+                pbar: Optional[List[tqdm]]=None,
+                verbose: Optional[bool]=False) -> None:
+    """Convert a dictionary into a SQL table .
+
+    Args:
+        data (dict): [The dictionary to be converted to sql]
+        sql_creator (SQLCreator): [The sql creator object]
+        neem_id (Optional[ObjectId], optional): [The neem id of the data if the data belongs to a neem]. Defaults to None.
+        pbar (Optional[tqdm], optional): [The progress bar]. Defaults to None.
+        verbose (Optional[bool], optional): [Whether to print stats or not]. Defaults to False.
+    """
     neem_id_val = mon2py(deepcopy(neem_id)) if neem_id is not None else None
     for key, docs in data.items():
         if '"' in key:
             key = re.sub('(\")',"", key)
         for doc in docs:
-            doc['neem_id'] = neem_id_val
-            sql_creator.convert_to_sql(key, doc)
-            sql_creator.add_fk('neems', key, 'neem_id', parent_col_name="_id")
+            if neem_id_val is not None:
+                doc['neem_id'] = neem_id_val
+            sql_creator.convert_to_sql(key, doc, verbose=verbose)
+            if neem_id_val is not None:
+                sql_creator.add_fk('neems', key, 'neem_id', parent_col_name="_id")
             if pbar is not None:
                 [pb.update(1) for pb in pbar]
 
-def link_predicate_tables(sql_creator:SQLCreator, use_pbar=True):
+def index_predicate_tables(sql_creator:SQLCreator, use_pbar: Optional[bool]=True) -> Tuple[int, float]:
+    """Index predicate tables .
+
+    Args:
+        sql_creator (SQLCreator): [The sql creator object]
+        use_pbar (Optional[bool], optional): [Whether to use a progress bar or not]. Defaults to True.
+
+    Returns:
+        Tuple[int, float]: [The number of tables and the time it took to index the tables]
+    """
     data_to_insert_cp = deepcopy(sql_creator.data_to_insert)
     pbar = None
     total = 0
     if use_pbar:
         total = sum([len(v) for k, v in data_to_insert_cp.items()])
-        pbar = tqdm(total=total, desc="Linking Predicate Tables", colour="#FFA500")
+        pbar = tqdm(total=total, desc="Indexing Predicate Tables", colour="#FFA500")
     for key, cols in data_to_insert_cp.items():
         for i, (col_name, col_data) in enumerate(cols.items()):
                 if pbar is not None:
@@ -814,7 +974,17 @@ def link_predicate_tables(sql_creator:SQLCreator, use_pbar=True):
         pbar.close()
     return total, pbar_time
 
-def link_tf_and_triples(data:dict, sql_creator:SQLCreator, use_pbar=True):
+def link_tf_and_triples(data:dict, sql_creator:SQLCreator, use_pbar: Optional[bool]=True) -> Tuple[int, float]:
+    """Link the tf and triples data .
+
+    Args:
+        data (dict): [The data to be linked]
+        sql_creator (SQLCreator): [The sql creator object]
+        use_pbar (Optional[bool], optional): [Whether to use a progress bar or not]. Defaults to True.
+
+    Returns:
+        Tuple[int, float]: [The number of iterations and the time it took to link the data]
+    """
     time_start = np.array(sql_creator.data_to_insert['soma_hasIntervalBegin']['o'])
     tsi = np.array(sql_creator.data_to_insert['soma_hasIntervalBegin']['dul_TimeInterval_s'])
     tei = np.array(sql_creator.data_to_insert['soma_hasIntervalEnd']['dul_TimeInterval_s'])
@@ -841,8 +1011,6 @@ def link_tf_and_triples(data:dict, sql_creator:SQLCreator, use_pbar=True):
         neem_id_cond = np.equal(s_neem_id, e_neem_id[e_idx])
         time_interval_cond = np.equal(tsi, tei[e_idx])
         s_idicies = np.argwhere(np.logical_and(time_interval_cond,neem_id_cond)).flatten()
-        # if len(s_idx) > 1:
-            # raise Exception(f"more than one start time for end time\n{e_idx}\n{e}\n{s_idx}\n{time_start[s_idx]}\n{time_end[e_idx]}\n{e_neem_id[e_idx]}\n{s_neem_id[s_idx]}\n{tsi[s_idx]}\n{tei[e_idx]}")
         for s_idx in s_idicies:
             s = time_start[s_idx]
             cond1 = np.greater_equal(stamp, s)
@@ -886,17 +1054,42 @@ def link_tf_and_triples(data:dict, sql_creator:SQLCreator, use_pbar=True):
     sql_creator.data_to_insert[new_table_name]['soma_hasIntervalEnd_ID'] = e_idx_list
     return len(time_end), pbar_time
 
-def mongo_collection_to_list_of_dicts(collection):
+def mongo_collection_to_list_of_dicts(collection: Collection) -> List[Dict]:
+    """Convert a mongodb collection to a list of dictionaries .
+
+    Args:
+        collection (Collection): [a mongodb collection]
+
+    Returns:
+        [List[Dict]]: [a list of of collection documents]
+    """
     return [doc for doc in collection.find({})]
 
-def link_and_upload(sql_creator:SQLCreator, predicate_sql_creator:SQLCreator, data_sizes, data_times, reset=False, drop=False):
+def link_and_upload(sql_creator:SQLCreator,
+                    predicate_sql_creator:SQLCreator,
+                    data_sizes:dict, data_times:dict,
+                    reset: Optional[bool]=False,
+                    drop: Optional[bool]=False) -> float:
+    """Index the predicate tables, Link tf and triples together, and upload the data to the database.
+
+    Args:
+        sql_creator (SQLCreator): [the sql creator object]
+        predicate_sql_creator (SQLCreator): [the triples sql creator object]
+        data_sizes (dict): [a dictionary to store the data sizes]
+        data_times (dict): [a dictionary to store the data times]
+        reset (Optional[bool], optional): [reset the SQLCreator objects to empty the data]. Defaults to False.
+        drop (Optional[bool], optional): [drop the tables that will be inserted first]. Defaults to False.
+    
+    Returns:
+        [float]: [the total time to upload the data]
+    """
 
     total_time = 0
     data = sql_creator.data_to_insert
-    predicate_linking_sz, predicate_linking_time = link_predicate_tables(predicate_sql_creator)
-    total_time += predicate_linking_time
-    data_sizes['predicate_linking'].append(predicate_linking_sz)
-    data_times['predicate_linking'].append(predicate_linking_time)
+    predicate_indexing_sz, predicate_indexing_time = index_predicate_tables(predicate_sql_creator)
+    total_time += predicate_indexing_time
+    data_sizes['predicate_indexing'].append(predicate_indexing_sz)
+    data_times['predicate_indexing'].append(predicate_indexing_time)
     tf_triples_linking_sz, tf_triples_linking_time = link_tf_and_triples(data, predicate_sql_creator)
     total_time += tf_triples_linking_time
     data_sizes['tf_triples_linking'].append(tf_triples_linking_sz)
@@ -995,9 +1188,9 @@ if __name__ == "__main__":
     total_tf_creation_time = 0
     total_triples_creation_time = 0
     data_sizes = {c:[] for c in coll_names}
-    data_sizes.update({'predicate_linking':[], 'tf_triples_linking':[], 'data_upload':[]})
+    data_sizes.update({'predicate_indexing':[], 'tf_triples_linking':[], 'data_upload':[]})
     data_times = {c:[] for c in coll_names}
-    data_times.update({'predicate_linking':[], 'tf_triples_linking':[], 'data_upload':[]})
+    data_times.update({'predicate_indexing':[], 'tf_triples_linking':[], 'data_upload':[]})
     for batch_idx, batch in enumerate(meta_lod_batches[start_from:start_from+first_n_batches]):
         all_docs = 0
         collections = {}
@@ -1062,7 +1255,7 @@ if __name__ == "__main__":
     print("TF Creation Time = ", total_tf_creation_time)
     print("Triples Creation Time = ", total_triples_creation_time)
     print("Creation Time = ", total_creation_time)
-    print("Predicate Linking Time = ", sum(data_times['predicate_linking']))
+    print("Predicate Linking Time = ", sum(data_times['predicate_indexing']))
     print("TF Triples Linking Time = ", sum(data_times['tf_triples_linking']))
     print("Data Upload Time = ", sum(data_times['data_upload']))
     print("Total Time = ", total_time)

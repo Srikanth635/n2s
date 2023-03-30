@@ -8,6 +8,7 @@ from copy import deepcopy
 from pymongo import MongoClient
 from datetime import datetime
 from bson.decimal128 import Decimal128
+from typing import Optional, Tuple
 
 
 xsd2py = {XSD.integer: int, XSD.float: float, XSD.double: float, XSD.boolean: bool, XSD.dateTime: datetime,
@@ -19,7 +20,7 @@ xsd2sql = {XSD.integer: 'INT', XSD.float: 'DOUBLE', XSD.double: 'DOUBLE', XSD.bo
                 XSD.positiveInteger: 'INT UNSIGNED', XSD.dateTime: 'DATETIME', XSD.date: 'DATE', XSD.time: 'TIME',
                 XSD.string: 'TEXT', XSD.anyURI: 'VARCHAR(255)'}
 
-def get_byte_size(value):
+def get_byte_size(value: object):
     if type(value) == str:
         return len(value.encode('utf-8'))
     elif type(value) in [int, bool]:
@@ -31,7 +32,7 @@ def get_byte_size(value):
     else:
         raise ValueError('Unknown type')
 
-def get_sql_type_from_pyval(val, signed=True):
+def get_sql_type_from_pyval(val: object, signed: Optional[bool]=True):
     pytype = type(val)
     byte_size = get_byte_size(val)
     if pytype == int:
@@ -57,8 +58,10 @@ def get_sql_type_from_pyval(val, signed=True):
         else: # <= 2**32-1
             sqltype = 'LONGTEXT'
             byte_size = 2**32-1
-    else:
+    elif pytype in py2xsd:
         sqltype = xsd2sql[py2xsd[pytype]]
+    else:
+        raise ValueError('Unknown type')
     return sqltype, byte_size
 
 
@@ -98,11 +101,11 @@ class TriplesToSQL:
         for knsname, kns in self.ns.items():
             self.g.bind(knsname, kns)
     
-    def get_sql_type(self, val, property_name=None, signed=True):
+    def get_sql_type(self, val: object, property_name: Optional[str]=None)->Tuple[str, int]:
         if property_name is not None:
             if property_name in self.property_sql_type:
                 return self.property_sql_type[property_name]['type'], self.property_sql_type[property_name]['byte_size']
-        sqltype, byte_size = get_sql_type_from_pyval(val, signed=signed)
+        sqltype, byte_size = get_sql_type_from_pyval(val)
         return sqltype, byte_size
 
     def xsd_2_mysql_type(self, property_name:URIRef, o):
