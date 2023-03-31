@@ -240,7 +240,7 @@ class TriplesToSQL:
             print(json.dumps(self.ns, indent=4))
             print(len(self.ns))
     
-    def mongo_triples_to_graph(self, collection: Collection, verbose: Optional[bool]=False) -> None:
+    def mongo_triples_to_graph(self, collection: Union[List[Dict],Collection], verbose: Optional[bool]=False) -> None:
         """Convert MongoDB triples to RDF graph .
 
         Args:
@@ -425,7 +425,7 @@ class TriplesToSQL:
 
 
 if __name__ == "__main__":
-    from restructure_triples_and_neems import json_to_sql, dict_to_sql, SQLCreator
+    from migrate_neems_to_sql import json_to_sql, dict_to_sql, SQLCreator
 
     # Create TriplesToSQL object
     t2sql = TriplesToSQL()
