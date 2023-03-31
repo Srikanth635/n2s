@@ -1,14 +1,16 @@
 import os
 from sqlalchemy import create_engine, text
 from rdflib import Graph, URIRef, RDF, RDFS, OWL, Literal, Namespace, XSD, term
+from rdflib.graph import _SubjectType, _ObjectType, _PredicateType
 import json
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, Engine
 import re
 from copy import deepcopy
-from pymongo import MongoClient
+from pymongo import MongoClient, cursor
+from pymongo.collection import Collection
 from datetime import datetime
 from bson.decimal128 import Decimal128
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Union, List, Dict
 
 
 xsd2py = {XSD.integer: int, XSD.float: float, XSD.double: float, XSD.boolean: bool, XSD.dateTime: datetime,
@@ -20,10 +22,22 @@ xsd2sql = {XSD.integer: 'INT', XSD.float: 'DOUBLE', XSD.double: 'DOUBLE', XSD.bo
                 XSD.positiveInteger: 'INT UNSIGNED', XSD.dateTime: 'DATETIME', XSD.date: 'DATE', XSD.time: 'TIME',
                 XSD.string: 'TEXT', XSD.anyURI: 'VARCHAR(255)'}
 
-def get_byte_size(value: object):
+
+def get_byte_size(value: object) -> int:
+    """Returns the byte size of the given value .
+
+    Args:
+        value (object): [The value to get the byte size of.]
+
+    Raises:
+        ValueError: [if the type of the value is unknown.]
+
+    Returns:
+        int: [the byte size of the value.]
+    """
     if type(value) == str:
         return len(value.encode('utf-8'))
-    elif type(value) in [int, bool]:
+    elif isinstance(value, (int, bool)):
         return (value.bit_length() + 7) // 8
     elif type(value) == float:
         return 8
@@ -32,7 +46,19 @@ def get_byte_size(value: object):
     else:
         raise ValueError('Unknown type')
 
-def get_sql_type_from_pyval(val: object, signed: Optional[bool]=True):
+def get_sql_type_from_pyval(val: object, signed: Optional[bool]=True) -> Tuple[str, int]:
+    """Returns the sql type and the byte size of the given value.
+    
+    Args:
+        val (object): [The value to get the sql type of.]
+        signed (Optional[bool], optional): [If the value is signed. Defaults to True.]
+    
+    Raises:
+        ValueError: [if the type of the value is unknown.]
+
+    Returns:
+        Tuple[str, int]: [the sql type and the byte size of the value.]
+    """
     pytype = type(val)
     byte_size = get_byte_size(val)
     if pytype == int:
@@ -66,7 +92,21 @@ def get_sql_type_from_pyval(val: object, signed: Optional[bool]=True):
 
 
 class TriplesToSQL:
-    def __init__(self) -> None:   
+    def __init__(self) -> None:
+        """Initializes the TriplesToSQL class.
+        This class is used to deal with triples data in different formats, and convert it to and from SQL.
+        
+        Examples:
+            >>> from triples_to_sql import TriplesToSQL
+            >>> t2s = TriplesToSQL()
+            >>> import sqlalchemy
+            >>> engine = create_engine('mysql+pymysql://username:password@localhost/test?charset=utf8mb4')
+            >>> sql_triples_query_string = "SELECT s, p, o FROM test.triples"
+            >>> t2s.sql_to_graph(engine, sql_triples_query_string) # This is an RDFLib Graph, which can be used to query the data.
+            # If you want the graph as a dictionary, use t2s.graph_to_dict()
+            >>> triples_dict = t2s.graph_to_dict() # the outermost keys are the predicates, and the inner keys are subjects and objects,
+             and the values are lists, a list for subject and a list for object for each predicate.
+        """   
         self.data_types = {'types': [], 'values': []}
         self.all_property_types = {}
         self.predicate_dict = {}
@@ -74,7 +114,6 @@ class TriplesToSQL:
         self.domain = {'s': [], 'o': []}
         self.range = {'s': [], 'o': []}
         self.type = {'s': [], 'o': []}
-
         soma = Namespace("http://www.ease-crc.org/ont/SOMA.owl#")
         dul = Namespace("http://www.ontologydesignpatterns.org/ont/dul/DUL.owl#")
         iolite = Namespace("http://www.ontologydesignpatterns.org/ont/dul/IOLite.owl#")
@@ -96,51 +135,44 @@ class TriplesToSQL:
         self.reset_graph()
         self.property_sql_type = {}
     
-    def reset_graph(self):
+    def reset_graph(self) -> None:
+        """reset the graph by creating a new one and binding the namespaces.
+        """
         self.g = Graph(bind_namespaces="rdflib")  
         for knsname, kns in self.ns.items():
             self.g.bind(knsname, kns)
     
     def get_sql_type(self, val: object, property_name: Optional[str]=None)->Tuple[str, int]:
+        """Get the SQL type of a value, if this value is an output of a triple property, then the property name should be provided,
+        to get the correct SQL type.
+        
+        Args:
+            val (object): The value to get the SQL type of.
+            property_name (Optional[str], optional): The property name of the value. Defaults to None.
+        
+        Returns:
+            Tuple[str, int]: The SQL type and the byte size of the value.
+        """
         if property_name is not None:
             if property_name in self.property_sql_type:
                 return self.property_sql_type[property_name]['type'], self.property_sql_type[property_name]['byte_size']
         sqltype, byte_size = get_sql_type_from_pyval(val)
         return sqltype, byte_size
 
-    def xsd_2_mysql_type(self, property_name:URIRef, o):
-        for _, _, value in self.g.triples((property_name, RDFS.range, None)):
-            property_name_val = property_name.n3(self.g.namespace_manager)
-            val = value.n3(self.g.namespace_manager) if isinstance(value, URIRef) else value
-            if val not in self.data_types['types']:
-                self.data_types['types'].append(val)
-                self.data_types['values'].append(o)
-            if value == XSD.string:
-                return 'VARCHAR(255)'
-            elif value == XSD.integer:
-                return 'INT'
-            elif value == XSD.positiveInteger:
-                return 'INT UNSIGNED'
-            elif value == XSD.float:
-                return 'FLOAT'
-            elif value == XSD.double:
-                return 'DOUBLE'
-            elif value == XSD.boolean:
-                return 'BOOL'
-            elif value == XSD.dateTime:
-                return 'DATETIME'
-            elif value == XSD.date:
-                return 'DATE'
-            elif value == XSD.time:
-                return 'TIME'
-            elif value == self.ns['soma'].array_double:
-                return 'DOUBLE'
-            else:
-                return 'VARCHAR(2083)'
+    def ont_2_py(self, obj: object, name: Union[str, URIRef, "_PredicateType"]) -> object:
+        """Convert an object from an ontology to a python object, using the ontology's data types,
+        found by the RDFS.range property for the given property name, also it keeps track of the data types used,
+        and the values of each data type since the initialisation of the class in the self.property_sql_type dictionary.
+        
+        Args:
+            obj (object): The object to convert.
+            name (Union[str, URIRef, "_PredicateType"]): The property name of the object.
 
-    def ont_2_py(self, obj, name):
+        Returns:
+            object: The converted object.
+        """
         o = obj
-        property_name = URIRef(name)
+        property_name = URIRef(str(name))
         p_n3 = property_name.n3(self.g.namespace_manager)
         p_n3 = re.sub(':|-', '_', p_n3)
         # print(property_name.n3(self.g.namespace_manager))
@@ -175,13 +207,22 @@ class TriplesToSQL:
             return v
         return o
 
-    def sql_to_graph(self, sqlalchemy_engine, verbose=False):
-        engine = sqlalchemy_engine
-        # get a connection
-        conn = engine.connect()
-        curr = conn.execute(text("""SELECT s, p, o, neem_id
+    def sql_to_graph(self, sqlalchemy_engine:Engine, triples_query_string: Optional[str]=None, verbose: Optional[bool]=False) -> None:
+        """Convert the SQL triples to a graph.
+        
+        Args:
+            sqlalchemy_engine (Engine): The sqlalchemy engine to connect to the SQL database.
+            triples_query_string (Optional[str], optional): The SQL query string to get the triples. Defaults to None.
+            verbose (Optional[bool], optional): If True, print the graph as a json, and print the namespaces. Defaults to False.
+        """
+        triples_query_string = """SELECT s, p, o, neem_id
         FROM test.triples
-        ORDER BY _id;"""))
+        ORDER BY _id;""" if triples_query_string is None else triples_query_string
+
+        # get a connection
+        engine = sqlalchemy_engine
+        conn = engine.connect()
+        curr = conn.execute(text(triples_query_string))
         
         for v in curr:
             new_v = []
@@ -199,11 +240,21 @@ class TriplesToSQL:
             print(json.dumps(self.ns, indent=4))
             print(len(self.ns))
     
-    def mongo_triples_to_graph(self, collection, verbose=False):
+    def mongo_triples_to_graph(self, collection: Collection, verbose: Optional[bool]=False) -> None:
+        """Convert MongoDB triples to RDF graph .
+
+        Args:
+            collection (Collection): [A mongo collection of documents]
+            verbose (bool, optional): [If True, print the graph as a json, and print the namespaces.]. Defaults to False.
+
+        Raises:
+            ValueError: [If the triple is missing the object/value key]
+        """
         self.reset_graph()
         py2xsd = {int: XSD.integer, float: XSD.float, str: XSD.string, bool: XSD.boolean, list: self.ns['soma'].array_double,
                   datetime: XSD.dateTime}
         for docs in collection:
+            assert isinstance(docs, dict)
             if 'o' not in docs and 'v' in docs:
                 v = [docs['s'], docs['p'], docs['v']]
             elif 'o' in docs and 'v' not in docs:
@@ -215,37 +266,49 @@ class TriplesToSQL:
                 if not isinstance(v[i], str):
                     if isinstance(v[i], Decimal128):
                         v[i] = float(v[i].to_decimal())
-                    new_v.append(Literal(v[i], datatype=py2xsd[type(v[i])]))
+                    v_i_type = type(v[i])
+                    assert v_i_type in py2xsd, f'Unknown type {v_i_type}'
+                    new_v.append(Literal(v[i], datatype=py2xsd[v_i_type]))
                     continue
+                v_i = str(v[i])
                 # make sure that the predicate uri is correctly formatted
                 if i == 1:
-                    if 'http' in v[i]:
-                        if '#' not in v[i]:
-                            splitted_vi = v[i].split('/')
+                    if 'http' in v_i:
+                        if '#' not in v_i:
+                            splitted_vi = v_i.split('/')
                             last_vi = splitted_vi[-1]
-                            v[i] = '/'.join(splitted_vi[:-1]) + '#' + last_vi
+                            v_i = '/'.join(splitted_vi[:-1]) + '#' + last_vi
                 # make sure that the ontology is in the graph, if not add it
-                if v[i].startswith('http') and '#' in v[i]:
-                    ns_name = v[i].split('#')[0].split('/')[-1].split('.owl')[0]
-                    ns_iri = v[i].split('#')[0]+'#'
+                if v_i.startswith('http') and '#' in v_i:
+                    ns_name = v_i.split('#')[0].split('/')[-1].split('.owl')[0]
+                    ns_iri = v_i.split('#')[0]+'#'
                     if ns_iri not in self.ns_str.values():
-                        self.ns[ns_name] = Namespace(v[i].split('#')[0]+'#')
-                        self.ns_str[ns_name] = v[i].split('#')[0]+'#'
+                        self.ns[ns_name] = Namespace(v_i.split('#')[0]+'#')
+                        self.ns_str[ns_name] = v_i.split('#')[0]+'#'
                         self.g.bind(ns_name, self.ns[ns_name])
-                v[i] = v[i].strip('<>')
+                v_i = v_i.strip('<>')
                 # assert that the predicate name is correctly formatted, because it is used as a sql table name
                 if i == 1:
-                    if 'http' in v[i]:
-                        assert v[i].startswith('http') and '#' in v[i], 'Property name must be a URI, not {}'.format(v[i])
+                    if 'http' in v_i:
+                        assert v_i.startswith('http') and '#' in v_i, 'Property name must be a URI, not {}'.format(v_i)
                     else:
-                        assert '/' not in v[i], 'Property name is not formatted correctly {}'.format(v[i])
-                new_v.append(URIRef(v[i].strip('<>')) if '#' in v[i] and v[i].startswith('http') else Literal(v[i].strip('<>')))
+                        assert '/' not in v_i, 'Property name is not formatted correctly {}'.format(v_i)
+                new_v.append(URIRef(v_i.strip('<>')) if '#' in v_i and v_i.startswith('http') else Literal(v_i.strip('<>')))
             self.g.add(tuple(new_v))
         if verbose:
             print(json.dumps(self.ns, indent=4))
             print(len(self.ns))
 
-    def graph_to_dict(self, dump=False, graph=None):
+    def graph_to_dict(self, dump: Optional[bool]=False, graph: Optional[Graph]=None) -> Dict :
+        """Convert the graph to a dictionary of predicates and their subjects and objects.
+        
+        Args:
+            dump (Optional[bool], optional): If True, dump the dictionary to a json file. Defaults to False.
+            graph (Optional[Graph], optional): The graph to convert to a dictionary. Defaults to None.
+
+        Returns:
+            Dict: A dictionary of predicates and their subjects and objects.
+        """
         predicate_dict = {}
         g = self.g if graph is None else graph
         for s, p, o in g:
@@ -322,14 +385,31 @@ class TriplesToSQL:
             json.dump(new_predicate_dict, open('predicate_dict.json', 'w'), indent=4)
         return new_predicate_dict
     
-    def find_link_in_graph_dict(self, value, data):
+    def find_link_in_graph_dict(self, value:str, data:Dict) -> Tuple[Optional[int], Optional[object]]:
+        """Find the index of the value in the graph dictionary and return the index and the object.
+        
+        Args:
+            value (str): The value to find.
+            data (Dict): The graph dictionary.
+
+        Returns:
+            Tuple[Optional[int], Optional[object]]: The index and the object, or None if not found.
+        """
         try:
             idx = data['rdf_type']['s'].index(value)
             return idx+1, data['rdf_type']['o'][idx]
         except:
             return None, None
 
-    def triples_json_filter_func(self, doc):
+    def triples_json_filter_func(self, doc:Dict) -> Tuple[Optional[str], Dict, str]:
+        """Filter function for the json file to filter out the triples.
+        
+        Args:
+            doc (Dict): The document to filter.
+
+        Returns:
+            Tuple[Optional[str], Dict, str]: The name of the object, the document and the iri.
+        """
         iri = doc['@id']
         if '@type' in doc.keys():
             name = [dtype.split('#')[1] for dtype in doc['@type']]
