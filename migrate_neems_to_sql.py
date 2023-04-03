@@ -329,7 +329,7 @@ class SQLCreator():
             latest_id = 0
             if parent_list:
                 if table_name in self.sql_meta_data:
-                    res = self.get_id_from_sql(table_name, obj)
+                    res = self.get_value_from_sql(table_name, col_value_pairs=obj)
                     if len(res) != 0:
                         ID = res[-1]
                         return obj, type(obj), np.iterable(obj) and type(obj) != str, ID
@@ -558,24 +558,28 @@ class SQLCreator():
         col_string += ';'
         self.sql_table_creation_cmds.add(col_string)
     
-    def get_id_from_sql(self, table_name:str, col_value_pairs:dict) -> list:
-        """Retrieve a list of ids from a table .
+    def get_value_from_sql(self, table_name: str, col_name: Optional[str]='ID', col_value_pairs: Optional[dict]=None) -> list:
+        """Retrieve a list of values from a table column .
 
         Args:
-            table_name (str): [The name of the table to retrieve the ids from.]
-            col_value_pairs (dict): [each pair is a column name and a value to search for in that column.]
+            table_name (str): [The name of the table to retrieve the values from.]
+            col_name (str, optional): [The name of the column to retrieve the values from.]. Defaults to 'ID'.
+            col_value_pairs (dict, optional): [each pair is a column name and a value to search for in that column.]. Defaults to None.
 
         Returns:
-            [list]: [list of ids that match the search criteria.]
+            [list]: [list of values that match the search criteria.]
             
         """
-        sql_cmd = f"SELECT ID FROM {table_name} WHERE "
-        for i, (k, v) in enumerate(col_value_pairs.items()):
-            sql_cmd += f"{k} = '{v}'"
-            if i != len(col_value_pairs)-1:
-                sql_cmd += ' AND '
-            else:
-                sql_cmd += ';'
+        if col_value_pairs is None:
+            sql_cmd = f"SELECT {col_name} FROM {table_name};"
+        else:
+            sql_cmd = f"SELECT {col_name} FROM {table_name} WHERE "
+            for i, (k, v) in enumerate(col_value_pairs.items()):
+                sql_cmd += f"{k} = '{v}'"
+                if i != len(col_value_pairs)-1:
+                    sql_cmd += ' AND '
+                else:
+                    sql_cmd += ';'
         with self.engine.connect() as conn:
             try:
                 result = conn.execute(text(sql_cmd))
@@ -823,7 +827,7 @@ class SQLCreator():
     
 
 
-def neem_collection_to_sql(name: str, collection: list, sql_creator: SQLCreator,
+def neem_collection_to_sql(name: str, collection: List[Dict], sql_creator: SQLCreator,
                             neem_id: Optional[ObjectId]=None, pbar: Optional[List[tqdm]]=None, verbose: Optional[bool]=False) -> None:
     """Convert a collection of documents to sql commands.
     
@@ -835,9 +839,20 @@ def neem_collection_to_sql(name: str, collection: list, sql_creator: SQLCreator,
         pbar (tqdm, optional): [The progress bar]. Defaults to None.
         verbose (bool, optional): [If True, will print the time taken to convert dictionary data to commands]. Defaults to False.
     """
+        
     if len(collection) == 0:
         if verbose:
-            print(f"NO DOCUMENTS FOUND FOR {name} with neem_id {str(neem_id)}")
+            print(f"NO DOCUMENTS FOUND FOR {name}")
+            if neem_id is not None:
+                print(f"NEEM_ID = {neem_id}")
+    
+    if name == "neems":
+        ids = sql_creator.get_value_from_sql(name, col_name='_id')
+        collection = [doc for doc in collection if doc['_id'] not in ids]
+        if len(collection) == 0:
+            if verbose:
+                print("NO NEW NEEMS FOUND")
+                
     meta_sql_creator = SQLCreator(engine=sql_creator.engine, verbose=verbose)
 
     if neem_id is not None:
@@ -1113,15 +1128,38 @@ if __name__ == "__main__":
     # Parse command line arguments
     parser = argparse.ArgumentParser()
     parser.add_argument('--verbose', '-v', action='store_true')
-    parser.add_argument('--append_to_sql', '-ap', action='store_true')
-    parser.add_argument('--sql_url_env_var', '-su', default="LOCAL_SQL_URL")
+    parser.add_argument('--batch_size', '-bs', default=4, type=int)
+    parser.add_argument('--sql_username', '-su')
+    parser.add_argument('--sql_password', '-sp')
+    parser.add_argument('--sql_database', '-sd', default="test")
+    parser.add_argument('--sql_host', '-sh')
+    parser.add_argument('--sql_uri', '-suri', type=str, default=None)
+    parser.add_argument('--mongo_username', '-mu')
+    parser.add_argument('--mongo_password', '-mp')
+    parser.add_argument('--mongo_database', '-md', default="neems")
+    parser.add_argument('--mongo_host', '-mh')
+    parser.add_argument('--mongo_port', '-mpt', default=28015, type=int)
+    parser.add_argument('--mongo_uri', '-muri', type=str, default=None)
     args = parser.parse_args()
     verbose = args.verbose
-    append_to_sql = args.append_to_sql
-    sql_url_env_var = args.sql_url_env_var
+    batch_size = args.batch_size
+    sql_username = args.sql_username
+    sql_password = args.sql_password
+    sql_database = args.sql_database
+    sql_host = args.sql_host
+    sql_uri = args.sql_uri
+    mongo_username = args.mongo_username
+    mongo_password = args.mongo_password
+    mongo_database = args.mongo_database
+    mongo_host = args.mongo_host
+    mongo_port = args.mongo_port
+    mongo_uri = args.mongo_uri
 
     # Replace the uri string with your MongoDB deployment's connection string.
-    MONGODB_URI = os.environ["LOCAL_MONGODB_URI"]
+    if mongo_uri is not None:
+        MONGODB_URI = mongo_uri
+    else:
+        MONGODB_URI = f"mongodb://{mongo_username}:{mongo_password}@{mongo_host}:{mongo_port}/{mongo_database}"
     # set a 5-second connection timeout
     client = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=5000, unicode_decode_error_handler='ignore')
     try:
@@ -1131,8 +1169,11 @@ if __name__ == "__main__":
         print("Unable to connect to the server.")
 
     # Create SQL engine
-    sql_url = os.environ["LOCAL_SQL_URL2"]
-    engine = create_engine(sql_url)
+    if sql_uri is not None:
+        SQL_URI = sql_uri
+    else:
+        SQL_URI = f"mysql+pymysql://{sql_username}:{sql_password}@{sql_host}/{sql_database}?charset=utf8mb4"
+    engine = create_engine(SQL_URI)
 
     db = client.neems
     t2sql = TriplesToSQL()
@@ -1143,18 +1184,13 @@ if __name__ == "__main__":
     # Adding meta data
     meta = db.meta
     meta_lod = mongo_collection_to_list_of_dicts(meta)
-    if not append_to_sql:
-        neem_collection_to_sql("neems",
-                          meta_lod,
-                          sql_creator=sql_creator, verbose=verbose)
+    neem_collection_to_sql("neems",
+                        meta_lod,
+                        sql_creator=sql_creator, verbose=verbose)
     meta_lod = list(reversed(meta_lod))
-    batch_sz = 4
-    if append_to_sql:
-        first_n_batches = 0
-        start_from = 20
-    else:
-        first_n_batches = 1
-        start_from = 0
+    batch_sz = batch_size
+    first_n_batches = 0
+    start_from = 0
     meta_lod_batches = [meta_lod[i:i + batch_sz] for i in range(0, len(meta_lod), batch_sz)]
     first_n_batches = first_n_batches if first_n_batches > 0 else len(meta_lod_batches) - start_from
     coll_names = ['tf', 'triples', 'annotations', 'inferred']
@@ -1163,7 +1199,7 @@ if __name__ == "__main__":
     tf_len = []
     for batch_idx, batch in enumerate(meta_lod_batches[start_from:start_from+first_n_batches]):
 
-        verification = tqdm(total=batch_sz*4, desc=f"Verifying Data (batch {batch_idx+start_from})", colour='#FFA500')
+        verification = tqdm(total=len(batch)*4, desc=f"Verifying Data (batch {batch_idx+start_from})", colour='#FFA500')
 
         for d_i, doc in enumerate(batch):
 
@@ -1237,17 +1273,12 @@ if __name__ == "__main__":
         total_creation_time += all_neems_pbar.format_dict['elapsed']
         all_neems_pbar.close()
 
-        if append_to_sql:
-            link_and_upload_time = link_and_upload(sql_creator, predicate_sql_creator, data_sizes, data_times, reset=True)
-            total_time += link_and_upload_time
+        link_and_upload_time = link_and_upload(sql_creator, predicate_sql_creator, data_sizes, data_times, reset=True)
+        total_time += link_and_upload_time
 
     client.close()
     total_time += total_meta_time
     total_time += total_creation_time
-
-    if not append_to_sql:
-        link_and_upload_time = link_and_upload(sql_creator, predicate_sql_creator, data_sizes, data_times, reset=True, drop=True)
-        total_time += link_and_upload_time
 
     data_stats = {'data_sizes':data_sizes, 'data_times':data_times}
     print("Verification Time = ", verification_time)
