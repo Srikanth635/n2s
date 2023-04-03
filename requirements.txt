@@ -1,9 +1,5 @@
-ipython==8.12.0
-matplotlib==3.7.1
-networkx==3.0
 numpy==1.24.2
 orderedset==2.0.3
-pydotplus==2.0.2
 pymongo==4.3.3
 pymysql==1.0.3
 rdflib==6.3.2
