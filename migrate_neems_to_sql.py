@@ -1127,22 +1127,25 @@ if __name__ == "__main__":
 
     # Parse command line arguments
     parser = argparse.ArgumentParser()
-    parser.add_argument('--verbose', '-v', action='store_true')
-    parser.add_argument('--batch_size', '-bs', default=4, type=int)
-    parser.add_argument('--sql_username', '-su')
-    parser.add_argument('--sql_password', '-sp')
-    parser.add_argument('--sql_database', '-sd', default="test")
-    parser.add_argument('--sql_host', '-sh')
-    parser.add_argument('--sql_uri', '-suri', type=str, default=None)
-    parser.add_argument('--mongo_username', '-mu')
-    parser.add_argument('--mongo_password', '-mp')
-    parser.add_argument('--mongo_database', '-md', default="neems")
-    parser.add_argument('--mongo_host', '-mh')
-    parser.add_argument('--mongo_port', '-mpt', default=28015, type=int)
-    parser.add_argument('--mongo_uri', '-muri', type=str, default=None)
+    parser.add_argument('--verbose', '-v', action='store_true', help='Print various intermediate outputs for debugging')
+    parser.add_argument('--batch_size', '-bs', default=4, type=int, help='Batch size (number of neems per batch) for uploading data to the database, \
+        this is important for memory issues, if you encounter a memory problem try to reduce that number')
+    parser.add_argument('--dump_data_stats', '-dds', action='store_true', help='Dump the data statistics like the sizes and time taken for each operation to a file')
+    parser.add_argument('--sql_username', '-su', help='SQL username')
+    parser.add_argument('--sql_password', '-sp', help='SQL password')
+    parser.add_argument('--sql_database', '-sd', default="test", help='SQL database name')
+    parser.add_argument('--sql_host', '-sh', default="localhost", help='SQL host name')
+    parser.add_argument('--sql_uri', '-suri', type=str, default=None, help='SQL URI this replaces the other SQL arguments')
+    parser.add_argument('--mongo_username', '-mu', help='MongoDB username')
+    parser.add_argument('--mongo_password', '-mp', help='MongoDB password')
+    parser.add_argument('--mongo_database', '-md', default="neems", help='MongoDB database name')
+    parser.add_argument('--mongo_host', '-mh', default="localhost", help='MongoDB host name')
+    parser.add_argument('--mongo_port', '-mpt', default=28015, type=int, help='MongoDB port number')
+    parser.add_argument('--mongo_uri', '-muri', type=str, default=None, help='MongoDB URI this replaces the other MongoDB arguments')
     args = parser.parse_args()
     verbose = args.verbose
     batch_size = args.batch_size
+    dump_data_stats = args.dump_data_stats
     sql_username = args.sql_username
     sql_password = args.sql_password
     sql_database = args.sql_database
@@ -1291,5 +1294,6 @@ if __name__ == "__main__":
     print("Data Upload Time = ", sum(data_times['data_upload']))
     print("Total Time = ", total_time)
 
-    with open('data_stats.pickle', 'wb') as f:
-        pickle.dump(data_stats, f, protocol=pickle.HIGHEST_PROTOCOL)
+    if dump_data_stats:
+        with open('data_stats.pickle', 'wb') as f:
+            pickle.dump(data_stats, f, protocol=pickle.HIGHEST_PROTOCOL)
