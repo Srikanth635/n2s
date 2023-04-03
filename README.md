@@ -19,7 +19,13 @@ pip install -r requirements.txt
 ```
 
 ## Usage:
-The usage is straight forward, if you have your new neems on a MongoDB, and you have the credentials for access to the MongoDB and the MariaDB, then you are good to go.
+The usage is straight forward, if you have your new neems on a MongoDB, and you have the credentials for access to the MongoDB and the MariaDB, then you are good to go. The only file you need to run is "migrate_neems_to_sql.py", for example the following command uses the sql uri and the mongo uri instead of providing username, password, and hostname, arguments, this is for providing more flexibility:
+
+```
+python migrate_neems_to_sql.py --sql_uri "mysql+pymysql://username:password@localhost/test?charset=utf8mb4" --mongo_uri "mongodb://username:password@localhost:28015/neems"
+```
+For all usages of the command line see the command line arguments documentation below:
+
 ```
 usage: migrate_neems_to_sql.py [-h] [--verbose] [--batch_size BATCH_SIZE] [--dump_data_stats] [--sql_username SQL_USERNAME] [--sql_password SQL_PASSWORD]
                                [--sql_database SQL_DATABASE] [--sql_host SQL_HOST] [--sql_uri SQL_URI] [--mongo_username MONGO_USERNAME]
