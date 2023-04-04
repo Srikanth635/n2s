@@ -240,13 +240,13 @@ class TriplesToSQL:
             print(json.dumps(self.ns, indent=4))
             print(len(self.ns))
     
-    def mongo_triples_to_graph(self, collection: Union[List[Dict],Collection], verbose: Optional[bool]=False) -> None:
+    def mongo_triples_to_graph(self, collection: Union[List[Dict],Collection], verbose: Optional[bool]=False, skip: Optional[bool]=False) -> None:
         """Convert MongoDB triples to RDF graph .
 
         Args:
             collection (Collection): [A mongo collection of documents]
             verbose (bool, optional): [If True, print the graph as a json, and print the namespaces.]. Defaults to False.
-
+            skip (bool, optional): [If True, skip data with value error of missing columns]. Defaults to False.
         Raises:
             ValueError: [If the triple is missing the object/value key]
         """
@@ -260,6 +260,8 @@ class TriplesToSQL:
             elif 'o' in docs and 'v' not in docs:
                 v = [docs['s'], docs['p'], docs['o']]
             else:
+                if skip:
+                    continue
                 raise ValueError(f'Missing Object value in triple {docs}')
             new_v = []
             for i in range(3):

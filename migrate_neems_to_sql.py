@@ -1129,6 +1129,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--verbose', '-v', action='store_true', help='Print various intermediate outputs for debugging')
     parser.add_argument('--drop', '-d', action='store_true', help='Drop the tables that will be inserted first')
+    parser.add_argument('--skip_bad_triples', '-sbt', action='store_true', help='Skip bad triples')
     parser.add_argument('--batch_size', '-bs', default=4, type=int, help='Batch size (number of neems per batch) for uploading data to the database, \
         this is important for memory issues, if you encounter a memory problem try to reduce that number')
     parser.add_argument('--dump_data_stats', '-dds', action='store_true', help='Dump the data statistics like the sizes and time taken for each operation to a file')
@@ -1159,6 +1160,7 @@ if __name__ == "__main__":
     mongo_port = args.mongo_port
     mongo_uri = args.mongo_uri
     drop = args.drop
+    skip_bad_triples = args.skip_bad_triples
 
     # Replace the uri string with your MongoDB deployment's connection string.
     if mongo_uri is not None:
@@ -1218,7 +1220,7 @@ if __name__ == "__main__":
                     if verbose:
                         print("len(lod)", len(lod))
                         print("neem_id", id)
-                    t2sql.mongo_triples_to_graph(lod)
+                    t2sql.mongo_triples_to_graph(lod, skip=skip_bad_triples)
                     lod = t2sql.graph_to_dict()
                 elif cname == 'tf':
                     tf_len.append(len(lod))
