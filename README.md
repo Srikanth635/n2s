@@ -18,6 +18,28 @@ Go to package root directory, then do:
 pip install -r requirements.txt
 ```
 
+## Recommendations
+
+I would recommend using a copy of the mongo database instead of the original one to avoide catastrophies or data corruption. You can do that using something similar to the following commands:
+
+```
+sudo mkdir -p /opt/backup
+
+sudo mongodump --username "neem_user" --password "neem_password" --authenticationDatabase neems --host "neem_host" --port 28015 --out=/opt/backup/mongodump-2023-02-09
+```
+
+Then you can easily create a copy of it into a local database:
+
+```
+mongorestore /opt/backup/mongodump-2023-02-09
+```
+
+Which would normally be accessed using this uri:
+
+```
+mongodb://localhost:27017
+```
+
 ## Usage:
 The usage is straight forward, if you have your new neems on a MongoDB, and you have the credentials for access to the MongoDB and the MariaDB, then you are good to go. The only file you need to run is "migrate_neems_to_sql.py", for example the following command uses the sql uri and the mongo uri instead of providing username, password, and hostname, arguments, this is for providing more flexibility:
 
