@@ -41,6 +41,13 @@ mongodb://localhost:27017
 ```
 
 ## Usage:
+
+Make sure that you have MonoDB server running:
+
+```
+sudo systemctl start mongod.service
+```
+
 The usage is straight forward, if you have your new neems on a MongoDB, and you have the credentials for access to the MongoDB and the MariaDB, then you are good to go. The only file you need to run is "migrate_neems_to_sql.py", for example the following command uses the sql uri and the mongo uri instead of providing username, password, and hostname, arguments, this is for providing more flexibility:
 
 ```
