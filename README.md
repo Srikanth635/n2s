@@ -65,14 +65,16 @@ The above commands assumes that you have an sql database called "my_sql_database
 For all usages of the command line see the command line arguments documentation below:
 
 ```
-usage: migrate_neems_to_sql.py [-h] [--verbose] [--drop] [--batch_size BATCH_SIZE] [--dump_data_stats] [--sql_username SQL_USERNAME] [--sql_password SQL_PASSWORD]
-                               [--sql_database SQL_DATABASE] [--sql_host SQL_HOST] [--sql_uri SQL_URI] [--mongo_username MONGO_USERNAME] [--mongo_password MONGO_PASSWORD]
-                               [--mongo_database MONGO_DATABASE] [--mongo_host MONGO_HOST] [--mongo_port MONGO_PORT] [--mongo_uri MONGO_URI]
+usage: migrate_neems_to_sql.py [-h] [--verbose] [--drop] [--skip_bad_triples] [--batch_size BATCH_SIZE] [--dump_data_stats] [--sql_username SQL_USERNAME]
+                               [--sql_password SQL_PASSWORD] [--sql_database SQL_DATABASE] [--sql_host SQL_HOST] [--sql_uri SQL_URI] [--mongo_username MONGO_USERNAME]
+                               [--mongo_password MONGO_PASSWORD] [--mongo_database MONGO_DATABASE] [--mongo_host MONGO_HOST] [--mongo_port MONGO_PORT] [--mongo_uri MONGO_URI]
 
 optional arguments:
   -h, --help            show this help message and exit
   --verbose, -v         Print various intermediate outputs for debugging
   --drop, -d            Drop the tables that will be inserted first
+  --skip_bad_triples, -sbt
+                        Skip bad triples
   --batch_size BATCH_SIZE, -bs BATCH_SIZE
                         Batch size (number of neems per batch) for uploading data to the database, this is important for memory issues, if you encounter a memory problem try
                         to reduce that number
