@@ -25,13 +25,13 @@ I would recommend using a copy of the mongo database instead of the original one
 ```
 sudo mkdir -p /opt/backup
 
-sudo mongodump --username "neem_user" --password "neem_password" --authenticationDatabase neems --host "neem_host" --port 28015 --out=/opt/backup/mongodump-2023-02-09
+sudo mongodump --username "neem_user" --password "neem_password" --authenticationDatabase neems --host "neem_host" --port 28015 --out=/opt/backup/my_mongodump
 ```
 
 Then you can easily create a copy of it into a local database:
 
 ```
-mongorestore /opt/backup/mongodump-2023-02-09
+mongorestore /opt/backup/my_mongodump
 ```
 
 Which would normally be accessed using this uri:
