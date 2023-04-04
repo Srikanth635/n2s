@@ -1129,7 +1129,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--verbose', '-v', action='store_true', help='Print various intermediate outputs for debugging')
     parser.add_argument('--drop', '-d', action='store_true', help='Drop the tables that will be inserted first')
-    parser.add_argument('--skip_bad_triples', '-sbt', action='store_true', help='Skip bad triples')
+    parser.add_argument('--skip_bad_triples', '-sbt', action='store_true', help='Skip triples that are missing one of subject, predicate or object')
     parser.add_argument('--batch_size', '-bs', default=4, type=int, help='Batch size (number of neems per batch) for uploading data to the database, \
         this is important for memory issues, if you encounter a memory problem try to reduce that number')
     parser.add_argument('--dump_data_stats', '-dds', action='store_true', help='Dump the data statistics like the sizes and time taken for each operation to a file')
