@@ -10,12 +10,34 @@ You need to have both [MongoDB](https://www.mongodb.com/docs/manual/tutorial/ins
 
 Clone the repository:
 ```
-git clone https://github.com/AbdelrhmanBassiouny/neem_to_sql.git
+git clone git@github.com:AbdelrhmanBassiouny/neem_to_sql.git
 ```
 
 Go to package root directory, then do:
 ```
 pip install -r requirements.txt
+```
+
+## Recommendations
+
+I would recommend using a copy of the mongo database instead of the original one to avoide catastrophies or data corruption. You can do that using something similar to the following commands:
+
+```
+sudo mkdir -p /opt/backup
+
+sudo mongodump --username "neem_user" --password "neem_password" --authenticationDatabase neems --host "neem_host" --port 28015 --out=/opt/backup/my_mongodump
+```
+
+Then you can easily create a copy of it into a local database:
+
+```
+mongorestore /opt/backup/my_mongodump
+```
+
+Which would normally be accessed using this uri:
+
+```
+mongodb://localhost:27017
 ```
 
 ## Usage:
@@ -24,20 +46,22 @@ The usage is straight forward, if you have your new neems on a MongoDB, and you 
 ```
 python migrate_neems_to_sql.py --sql_uri "mysql+pymysql://username:password@localhost/test?charset=utf8mb4" --mongo_uri "mongodb://username:password@localhost:28015/neems"
 ```
+The above command assumes that you have an sql database called "test" and a mongo database called "neems".
+
 For all usages of the command line see the command line arguments documentation below:
 
 ```
-usage: migrate_neems_to_sql.py [-h] [--verbose] [--batch_size BATCH_SIZE] [--dump_data_stats] [--sql_username SQL_USERNAME] [--sql_password SQL_PASSWORD]
-                               [--sql_database SQL_DATABASE] [--sql_host SQL_HOST] [--sql_uri SQL_URI] [--mongo_username MONGO_USERNAME]
-                               [--mongo_password MONGO_PASSWORD] [--mongo_database MONGO_DATABASE] [--mongo_host MONGO_HOST] [--mongo_port MONGO_PORT]
-                               [--mongo_uri MONGO_URI]
+usage: migrate_neems_to_sql.py [-h] [--verbose] [--drop] [--batch_size BATCH_SIZE] [--dump_data_stats] [--sql_username SQL_USERNAME] [--sql_password SQL_PASSWORD]
+                               [--sql_database SQL_DATABASE] [--sql_host SQL_HOST] [--sql_uri SQL_URI] [--mongo_username MONGO_USERNAME] [--mongo_password MONGO_PASSWORD]
+                               [--mongo_database MONGO_DATABASE] [--mongo_host MONGO_HOST] [--mongo_port MONGO_PORT] [--mongo_uri MONGO_URI]
 
 optional arguments:
   -h, --help            show this help message and exit
   --verbose, -v         Print various intermediate outputs for debugging
+  --drop, -d            Drop the tables that will be inserted first
   --batch_size BATCH_SIZE, -bs BATCH_SIZE
-                        Batch size (number of neems per batch) for uploading data to the database, this is important for memory issues, if you encounter a memory
-                        problem try to reduce that number
+                        Batch size (number of neems per batch) for uploading data to the database, this is important for memory issues, if you encounter a memory problem try
+                        to reduce that number
   --dump_data_stats, -dds
                         Dump the data statistics like the sizes and time taken for each operation to a file
   --sql_username SQL_USERNAME, -su SQL_USERNAME
