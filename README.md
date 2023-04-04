@@ -46,7 +46,7 @@ The usage is straight forward, if you have your new neems on a MongoDB, and you 
 ```
 python migrate_neems_to_sql.py --sql_uri "mysql+pymysql://username:password@localhost/test?charset=utf8mb4" --mongo_uri "mongodb://username:password@localhost:28015/neems"
 ```
-The above commands assumes that you have an sql database called "test" and a mongo collection called "neems".
+The above command assumes that you have an sql database called "test" and a mongo database called "neems".
 
 For all usages of the command line see the command line arguments documentation below:
 
