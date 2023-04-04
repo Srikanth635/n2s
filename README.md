@@ -10,7 +10,7 @@ You need to have both [MongoDB](https://www.mongodb.com/docs/manual/tutorial/ins
 
 Clone the repository:
 ```
-git clone https://github.com/AbdelrhmanBassiouny/neem_to_sql.git
+git clone git@github.com:AbdelrhmanBassiouny/neem_to_sql.git
 ```
 
 Go to package root directory, then do:
