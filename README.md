@@ -74,7 +74,7 @@ optional arguments:
   --verbose, -v         Print various intermediate outputs for debugging
   --drop, -d            Drop the tables that will be inserted first
   --skip_bad_triples, -sbt
-                        Skip bad triples
+                        Skip triples that are missing one of subject, predicate or object
   --batch_size BATCH_SIZE, -bs BATCH_SIZE
                         Batch size (number of neems per batch) for uploading data to the database, this is important for memory issues, if you encounter a memory problem try
                         to reduce that number
