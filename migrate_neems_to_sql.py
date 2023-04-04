@@ -1128,12 +1128,13 @@ if __name__ == "__main__":
     # Parse command line arguments
     parser = argparse.ArgumentParser()
     parser.add_argument('--verbose', '-v', action='store_true', help='Print various intermediate outputs for debugging')
+    parser.add_argument('--drop', '-d', action='store_true', help='Drop the tables that will be inserted first')
     parser.add_argument('--batch_size', '-bs', default=4, type=int, help='Batch size (number of neems per batch) for uploading data to the database, \
         this is important for memory issues, if you encounter a memory problem try to reduce that number')
     parser.add_argument('--dump_data_stats', '-dds', action='store_true', help='Dump the data statistics like the sizes and time taken for each operation to a file')
     parser.add_argument('--sql_username', '-su', help='SQL username')
     parser.add_argument('--sql_password', '-sp', help='SQL password')
-    parser.add_argument('--sql_database', '-sd', default="test", help='SQL database name')
+    parser.add_argument('--sql_database', '-sd', help='SQL database name')
     parser.add_argument('--sql_host', '-sh', default="localhost", help='SQL host name')
     parser.add_argument('--sql_uri', '-suri', type=str, default=None, help='SQL URI this replaces the other SQL arguments')
     parser.add_argument('--mongo_username', '-mu', help='MongoDB username')
@@ -1157,6 +1158,7 @@ if __name__ == "__main__":
     mongo_host = args.mongo_host
     mongo_port = args.mongo_port
     mongo_uri = args.mongo_uri
+    drop = args.drop
 
     # Replace the uri string with your MongoDB deployment's connection string.
     if mongo_uri is not None:
@@ -1200,6 +1202,8 @@ if __name__ == "__main__":
     verification_time = 0
     total_time = 0
     tf_len = []
+
+    # Verifying data
     for batch_idx, batch in enumerate(meta_lod_batches[start_from:start_from+first_n_batches]):
 
         verification = tqdm(total=len(batch)*4, desc=f"Verifying Data (batch {batch_idx+start_from})", colour='#FFA500')
@@ -1211,6 +1215,9 @@ if __name__ == "__main__":
                 coll = db.get_collection(id + '_' + cname)
                 lod = mongo_collection_to_list_of_dicts(coll)
                 if cname in ['annotations', 'triples']:
+                    if verbose:
+                        print("len(lod)", len(lod))
+                        print("neem_id", id)
                     t2sql.mongo_triples_to_graph(lod)
                     lod = t2sql.graph_to_dict()
                 elif cname == 'tf':
@@ -1222,6 +1229,7 @@ if __name__ == "__main__":
         print("tf_len", tf_len)
     total_time += verification_time
 
+    # Creating & Executing SQL commands from the data
     total_meta_time = 0
     total_creation_time = 0
     total_tf_creation_time = 0
@@ -1276,7 +1284,7 @@ if __name__ == "__main__":
         total_creation_time += all_neems_pbar.format_dict['elapsed']
         all_neems_pbar.close()
 
-        link_and_upload_time = link_and_upload(sql_creator, predicate_sql_creator, data_sizes, data_times, reset=True)
+        link_and_upload_time = link_and_upload(sql_creator, predicate_sql_creator, data_sizes, data_times, reset=True, drop=drop)
         total_time += link_and_upload_time
 
     client.close()

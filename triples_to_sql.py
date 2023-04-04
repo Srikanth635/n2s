@@ -260,7 +260,7 @@ class TriplesToSQL:
             elif 'o' in docs and 'v' not in docs:
                 v = [docs['s'], docs['p'], docs['o']]
             else:
-                raise ValueError('Missing Object value in triple')
+                raise ValueError(f'Missing Object value in triple {docs}')
             new_v = []
             for i in range(3):
                 if not isinstance(v[i], str):
