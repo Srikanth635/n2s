@@ -27,17 +27,17 @@ python migrate_neems_to_sql.py --sql_uri "mysql+pymysql://username:password@loca
 For all usages of the command line see the command line arguments documentation below:
 
 ```
-usage: migrate_neems_to_sql.py [-h] [--verbose] [--batch_size BATCH_SIZE] [--dump_data_stats] [--sql_username SQL_USERNAME] [--sql_password SQL_PASSWORD]
-                               [--sql_database SQL_DATABASE] [--sql_host SQL_HOST] [--sql_uri SQL_URI] [--mongo_username MONGO_USERNAME]
-                               [--mongo_password MONGO_PASSWORD] [--mongo_database MONGO_DATABASE] [--mongo_host MONGO_HOST] [--mongo_port MONGO_PORT]
-                               [--mongo_uri MONGO_URI]
+usage: migrate_neems_to_sql.py [-h] [--verbose] [--drop] [--batch_size BATCH_SIZE] [--dump_data_stats] [--sql_username SQL_USERNAME] [--sql_password SQL_PASSWORD]
+                               [--sql_database SQL_DATABASE] [--sql_host SQL_HOST] [--sql_uri SQL_URI] [--mongo_username MONGO_USERNAME] [--mongo_password MONGO_PASSWORD]
+                               [--mongo_database MONGO_DATABASE] [--mongo_host MONGO_HOST] [--mongo_port MONGO_PORT] [--mongo_uri MONGO_URI]
 
 optional arguments:
   -h, --help            show this help message and exit
   --verbose, -v         Print various intermediate outputs for debugging
+  --drop, -d            Drop the tables that will be inserted first
   --batch_size BATCH_SIZE, -bs BATCH_SIZE
-                        Batch size (number of neems per batch) for uploading data to the database, this is important for memory issues, if you encounter a memory
-                        problem try to reduce that number
+                        Batch size (number of neems per batch) for uploading data to the database, this is important for memory issues, if you encounter a memory problem try
+                        to reduce that number
   --dump_data_stats, -dds
                         Dump the data statistics like the sizes and time taken for each operation to a file
   --sql_username SQL_USERNAME, -su SQL_USERNAME
