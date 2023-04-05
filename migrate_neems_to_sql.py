@@ -214,7 +214,7 @@ class SQLCreator():
                     null = False
                     if column_name == '_id' and key == 'neems':
                         unique = True
-            self.add_col(key, column_name, str(data_type), ISNULL=null, ISUNIQUE=unique)
+            self.add_col(key, column_name, data_type, ISNULL=null, ISUNIQUE=unique)
             if key not in self.data_types.keys():
                 self.data_types[key] = {}
             self.data_types[key][column_name] = data_type
@@ -232,7 +232,7 @@ class SQLCreator():
             if byte_sz is not None:
                 if self.data_bytes[key][column_name] is None:
                     self.data_bytes[key][column_name] = byte_sz
-                    self.data_types[key][column_name] = str(data_type)
+                    self.data_types[key][column_name] = data_type
                     self.sql_table_creation_cmds.add(f"ALTER TABLE {key} MODIFY COLUMN {column_name} {data_type};")
                 elif byte_sz > self.data_bytes[key][column_name]:
                     if key in self.original_data_bytes:
@@ -245,7 +245,7 @@ class SQLCreator():
                                 else:
                                     LOGGER.warning(f"{key}.{column_name} has increased size: {self.original_data_bytes[key][column_name]} and {byte_sz}")
                     self.data_bytes[key][column_name] = byte_sz
-                    self.data_types[key][column_name] = str(data_type)
+                    self.data_types[key][column_name] = data_type
                     self.sql_table_creation_cmds.add(f"ALTER TABLE {key} MODIFY COLUMN {column_name} {data_type};")
 
     def find_relationships(self, key:str, obj:dict or list, parent_key: Optional[str]=None) -> None:
@@ -905,7 +905,7 @@ class SQLCreator():
                 key = re.sub("(@)","_", key)
             # if 'range' in key:
             #     key = re.sub("range","range_", key)
-            conn.execute(text(f"drop table if exists {key};"))
+            conn.execute(text(f"drop table if exists {key} CASCADE;"))
         conn.execute(text("SET FOREIGN_KEY_CHECKS=1;"))
 
     def _execute_cmds(self, sql_cmds:list, conn:Connection, pbar: Optional[tqdm] = None) -> None:
