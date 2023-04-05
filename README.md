@@ -65,9 +65,10 @@ The above commands assumes that you have an sql database called "my_sql_database
 For all usages of the command line see the command line arguments documentation below:
 
 ```
-usage: migrate_neems_to_sql.py [-h] [--verbose] [--drop] [--skip_bad_triples] [--batch_size BATCH_SIZE] [--dump_data_stats] [--sql_username SQL_USERNAME]
-                               [--sql_password SQL_PASSWORD] [--sql_database SQL_DATABASE] [--sql_host SQL_HOST] [--sql_uri SQL_URI] [--mongo_username MONGO_USERNAME]
-                               [--mongo_password MONGO_PASSWORD] [--mongo_database MONGO_DATABASE] [--mongo_host MONGO_HOST] [--mongo_port MONGO_PORT] [--mongo_uri MONGO_URI]
+usage: migrate_neems_to_sql.py [-h] [--verbose] [--drop] [--skip_bad_triples] [--allow_increasing_sz] [--allow_text_indexing] [--max_null_percentage MAX_NULL_PERCENTAGE]
+                               [--batch_size BATCH_SIZE] [--num_batches NUM_BATCHES] [--dump_data_stats] [--sql_username SQL_USERNAME] [--sql_password SQL_PASSWORD]
+                               --sql_database SQL_DATABASE [--sql_host SQL_HOST] [--sql_uri SQL_URI] [--mongo_username MONGO_USERNAME] [--mongo_password MONGO_PASSWORD]
+                               [--mongo_database MONGO_DATABASE] [--mongo_host MONGO_HOST] [--mongo_port MONGO_PORT] [--mongo_uri MONGO_URI] [--log_level LOG_LEVEL]
 
 optional arguments:
   -h, --help            show this help message and exit
@@ -75,9 +76,17 @@ optional arguments:
   --drop, -d            Drop the tables that will be inserted first
   --skip_bad_triples, -sbt
                         Skip triples that are missing one of subject, predicate or object
+  --allow_increasing_sz, -ais
+                        Allow increasing the size of the original data type of a column
+  --allow_text_indexing, -ati
+                        Allow indexing text type columns
+  --max_null_percentage MAX_NULL_PERCENTAGE, -mnp MAX_NULL_PERCENTAGE
+                        Maximum percentage of null values allowed in a column otherwise it will be put in a separate table
   --batch_size BATCH_SIZE, -bs BATCH_SIZE
                         Batch size (number of neems per batch) for uploading data to the database, this is important for memory issues, if you encounter a memory problem try
                         to reduce that number
+  --num_batches NUM_BATCHES, -nb NUM_BATCHES
+                        Number of batches to upload the data to the database
   --dump_data_stats, -dds
                         Dump the data statistics like the sizes and time taken for each operation to a file
   --sql_username SQL_USERNAME, -su SQL_USERNAME
@@ -102,4 +111,6 @@ optional arguments:
                         MongoDB port number
   --mongo_uri MONGO_URI, -muri MONGO_URI
                         MongoDB URI this replaces the other MongoDB arguments
+  --log_level LOG_LEVEL, -logl LOG_LEVEL
+                        Log level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
 ```
