@@ -1365,7 +1365,7 @@ if __name__ == "__main__":
                 coll = db.get_collection(id + '_' + cname)
                 lod = mongo_collection_to_list_of_dicts(coll)
                 if cname in ['annotations', 'triples']:
-                    t2sql.mongo_triples_to_graph(lod)
+                    t2sql.mongo_triples_to_graph(lod, skip=skip_bad_triples)
                     lod = t2sql.graph_to_dict()
                     sz = sum([len(v) for v in lod.values()])
                 else:
