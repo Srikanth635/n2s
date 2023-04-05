@@ -102,10 +102,10 @@ def mon2py(val: object, name: Optional[str]=None):
         return val
 
 def py2sql(val:object,
-            table_name:str,
-              column_name:str,
-                id: Optional[bool]=False,
-                  type2sql_func: Optional[Callable[[object, str], Tuple[str, int]]]=None) -> Tuple[Optional[str], Optional[int]]:
+           table_name:str,
+           column_name:str,
+           id: Optional[bool]=False,
+           type2sql_func: Optional[Callable[[object, str], Tuple[str, int]]]=None) -> Tuple[Optional[str], Optional[int]]:
     """Convert the value from python to sql type
     Args:
         val ([object]): [value from python to be converted to sql type]
@@ -134,8 +134,7 @@ class SQLCreator():
                   allowed_missing_percentage: Optional[int]=5,
                   tosql_func: Optional[Callable[[object, str], Tuple[str, int]]]=None,
                   allow_increasing_size: Optional[bool]=False,
-                  allow_text_indexing: Optional[bool]=False,
-                  verbose: Optional[bool]=False) -> None:
+                  allow_text_indexing: Optional[bool]=False) -> None:
         """A class to create SQL tables (from python data structures) and insert data into them
 
         Args:
@@ -145,7 +144,6 @@ class SQLCreator():
             tosql_func ([callable], optional): [function to convert the value from python to sql type]. Defaults to None.
             allow_increasing_size (bool, optional): [whether to allow increasing the size of the column]. Defaults to False.
             allow_text_indexing (bool, optional): [whether to allow indexing of text columns]. Defaults to False.
-            verbose (bool, optional): [whether to print the progress]. Defaults to False.
         
         Example:
             >>> data = {'ID': [1, 2, 3], 'name': ['a', 'b', 'c'], 'age': [10, 20, 30]}
@@ -169,7 +167,6 @@ class SQLCreator():
         self.linked_table_names = OrderedSet()
         self.allowed_missing_percentage = allowed_missing_percentage
         self.tosql_func = tosql_func
-        self.verpose = verbose
         self.data_bytes = {}
         self.data_types = {}
         self.sql_meta_data, self.original_data_types, self.original_data_bytes = self._get_sql_meta_data()
@@ -334,7 +331,7 @@ class SQLCreator():
 
     def convert_to_sql(self, key:str, obj: object, parent_key: Optional[str]=None,
                         key_iri: Optional[str]='', parent_key_iri: Optional[str]='', parent_table_name: Optional[str]='',
-                          parent_list: Optional[bool]=False, verbose: Optional[bool]=False) -> Tuple[object, object, bool, Optional[int]]:
+                          parent_list: Optional[bool]=False) -> Tuple[object, object, bool, Optional[int]]:
         """Convert a nested dictionary containing dictionaries and lists into a SQL table,
             by recursively traversing the dictionary and creating a table for each object,
             and a column for each key in the object, and storing the data in a dictionary made 
@@ -348,7 +345,6 @@ class SQLCreator():
             parent_key_iri (str, optional): [ontology iri of parent object]. Defaults to ''.
             parent_table_name (str, optional): [the name of the parent table which is made from parent object]. Defaults to ''.
             parent_list (bool, optional): [whether the parent object was a list or not]. Defaults to False.
-            verbose (bool, optional): [print on screen or not]. Defaults to False.
 
         Returns:
             [object]: [The provided object]
@@ -443,8 +439,7 @@ class SQLCreator():
                     return obj, type(obj), np.iterable(obj) and type(obj) != str, ID
                 else:
                     ID = len(rows_list) + 1 + latest_id
-                if verbose:
-                    print("Time to check if all values exist: ", time()-start)
+                LOGGER.debug("Time to check if all values exist: ", time()-start)
             elif ID is None:
                 ID = len(self.data_to_insert[table_name]['ID']) + 1 + latest_id
 
@@ -650,7 +645,7 @@ class SQLCreator():
         if idx_name is None:
             idx_name = f"{table_name}_{column_name}_idx"
         full_text = ""
-        if self.data_types[table_name][column_name] in ['TEXT', 'MEDIUMTEXT', 'LONGTEXT']:
+        if 'TEXT' in self.data_types[table_name][column_name] or 'BLOB' in self.data_types[table_name][column_name]:
             if self.allow_text_indexing:
                 full_text = "FULLTEXT "
             else:
@@ -840,19 +835,17 @@ class SQLCreator():
                     meta_data[row[0]].append(row[1])
                     data_types[row[0]] = {row[1]: row[2]}
                     data_bytes[row[0]] = {row[1]: sql_type_to_byte_size(row[2])}
-            if self.verpose:
-                if result.rowcount == 0:
-                    print("No data found")
-                else:
-                    print(result.rowcount, "row(s) found")
+            if result.rowcount == 0:
+                LOGGER.debug("No data found")
+            else:
+                LOGGER.debug(result.rowcount, "row(s) found")
             return meta_data, data_types, data_bytes
 
-    def upload_data_to_sql(self, drop_tables: Optional[bool] = True, verbose: Optional[bool] = False) -> Tuple[int, float]:
+    def upload_data_to_sql(self, drop_tables: Optional[bool] = True) -> Tuple[int, float]:
         """Upload the data to the database, this will create the tables and insert the data.
         
         Args:
             drop_tables (bool, optional): [If True, will drop the tables before creating them]. Defaults to True.
-            verbose (bool, optional): [If True, will print the time taken to convert dictionary data to commands]. Defaults to False.
 
         Returns:
             [int]: [data size in number of sql commands]
@@ -865,8 +858,7 @@ class SQLCreator():
         # Get the inertion cmds
         conversion_time_s = time()
         sql_insert_cmds = self.get_insert_rows_commands()
-        if verbose:
-            print("Dicitionary to Commands Conversion Time = ", time() - conversion_time_s)
+        LOGGER.debug("Dicitionary to Commands Conversion Time = ", time() - conversion_time_s)
 
         if drop_tables:
             self._drop_tables(self.data_to_insert, conn)
@@ -935,7 +927,7 @@ class SQLCreator():
 
 
 def neem_collection_to_sql(name: str, collection: List[Dict], sql_creator: SQLCreator,
-                            neem_id: Optional[ObjectId]=None, pbar: Optional[List[tqdm]]=None, verbose: Optional[bool]=False) -> None:
+                            neem_id: Optional[ObjectId]=None, pbar: Optional[List[tqdm]]=None) -> None:
     """Convert a collection of documents to sql commands.
     
     Args:
@@ -944,23 +936,20 @@ def neem_collection_to_sql(name: str, collection: List[Dict], sql_creator: SQLCr
         sql_creator (SQLCreator): [The sql creator object]
         neem_id (ObjectId, optional): [The neem_id of the collection if the collection belongs to a neem]. Defaults to None.
         pbar (tqdm, optional): [The progress bar]. Defaults to None.
-        verbose (bool, optional): [If True, will print the time taken to convert dictionary data to commands]. Defaults to False.
     """
         
     if len(collection) == 0:
-        if verbose:
-            print(f"NO DOCUMENTS FOUND FOR {name}")
-            if neem_id is not None:
-                print(f"NEEM_ID = {neem_id}")
+        LOGGER.debug(f"NO DOCUMENTS FOUND FOR {name}")
+        if neem_id is not None:
+            LOGGER.debug(f"NEEM_ID = {neem_id}")
     
     if name == "neems":
         ids = sql_creator.get_value_from_sql(name, col_name='_id')
         collection = [doc for doc in collection if doc['_id'] not in ids]
         if len(collection) == 0:
-            if verbose:
-                print("NO NEW NEEMS FOUND")
+            LOGGER.info("NO NEW NEEMS FOUND")
                 
-    meta_sql_creator = SQLCreator(engine=sql_creator.engine, verbose=verbose)
+    meta_sql_creator = SQLCreator(engine=sql_creator.engine)
 
     if neem_id is not None:
         [doc.update({"neem_id":deepcopy(neem_id)}) for doc in collection]
@@ -971,16 +960,14 @@ def neem_collection_to_sql(name: str, collection: List[Dict], sql_creator: SQLCr
     meta_sql_creator.filter_null_tables()
     sql_creator.not_always_there.extend(meta_sql_creator.not_always_there)
     sql_creator.one_item_lists.extend(meta_sql_creator.one_item_lists)
-    if verbose:
-        print("find_relationships_time = ", time() - start)
+    LOGGER.debug("find_relationships_time = ", time() - start)
 
     start = time()
     for doc in collection:
         sql_creator.convert_to_sql(name, doc)
         if pbar is not None:
             [pb.update(1) for pb in pbar]
-    if verbose:
-        print("convert_to_sql_time = ", time() - start)
+    LOGGER.debug("convert_to_sql_time = ", time() - start)
 
     if neem_id is not None:
         sql_creator.add_fk("neems", name, "neem_id", parent_col_name="_id")
@@ -992,8 +979,7 @@ def json_to_sql(top_table_name:str,
                 filter_doc: Optional[Callable[[dict], Tuple[Optional[str], dict, str]]]=None,
                 drop_tables: Optional[bool]=True,
                 value_mapping_func: Optional[Callable[[object, Optional[str]], object]]=None,
-                pbar: Optional[tqdm]=None,
-                verbose: Optional[bool]=False) -> None:
+                pbar: Optional[tqdm]=None) -> None:
     """Convert a json file to sql commands.
 
     Args:
@@ -1004,7 +990,6 @@ def json_to_sql(top_table_name:str,
         drop_tables (bool, optional): [If True, will drop all tables in the database that also is in the given data]. Defaults to True.
         value_mapping_func (Callable[[object, Optional[str]], object], optional): [A function that takes a value and the name of the column and returns the value to be inserted into the database]. Defaults to None.
         pbar (tqdm, optional): [The progress bar]. Defaults to None.
-        verbose (bool, optional): [If True, will print the number of documents]. Defaults to False.
     """
     n_doc = 0
     sql_creator = SQLCreator(value_mapping_func=value_mapping_func, engine=sqlalachemy_engine)
@@ -1036,15 +1021,13 @@ def json_to_sql(top_table_name:str,
         if f_i == 0:
             sql_creator.filter_null_tables()
     sql_creator._reference_to_existing_table()
-    if verbose:
-        print("number_of_json_documents = ", n_doc)
-    sql_creator.upload_data_to_sql(drop_tables=drop_tables, verbose=verbose)
+    LOGGER.debug("number_of_json_documents = ", n_doc)
+    sql_creator.upload_data_to_sql(drop_tables=drop_tables)
 
 def dict_to_sql(data: dict,
                 sql_creator:SQLCreator,
                 neem_id: Optional[ObjectId]=None,
-                pbar: Optional[List[tqdm]]=None,
-                verbose: Optional[bool]=False) -> None:
+                pbar: Optional[List[tqdm]]=None) -> None:
     """Convert a dictionary into a SQL table .
 
     Args:
@@ -1052,7 +1035,6 @@ def dict_to_sql(data: dict,
         sql_creator (SQLCreator): [The sql creator object]
         neem_id (Optional[ObjectId], optional): [The neem id of the data if the data belongs to a neem]. Defaults to None.
         pbar (Optional[tqdm], optional): [The progress bar]. Defaults to None.
-        verbose (Optional[bool], optional): [Whether to print stats or not]. Defaults to False.
     """
     neem_id_val = mon2py(deepcopy(neem_id)) if neem_id is not None else None
     for key, docs in data.items():
@@ -1061,7 +1043,7 @@ def dict_to_sql(data: dict,
         for doc in docs:
             if neem_id_val is not None:
                 doc['neem_id'] = neem_id_val
-            sql_creator.convert_to_sql(key, doc, verbose=verbose)
+            sql_creator.convert_to_sql(key, doc)
             if neem_id_val is not None:
                 sql_creator.add_fk('neems', key, 'neem_id', parent_col_name="_id")
             if pbar is not None:
@@ -1236,7 +1218,6 @@ if __name__ == "__main__":
 
     # Parse command line arguments
     parser = argparse.ArgumentParser()
-    parser.add_argument('--verbose', '-v', action='store_true', help='Print various intermediate outputs for debugging')
     parser.add_argument('--drop', '-d', action='store_true', help='Drop the tables that will be inserted first')
     parser.add_argument('--skip_bad_triples', '-sbt', action='store_true', help='Skip triples that are missing one of subject, predicate or object')
     parser.add_argument('--allow_increasing_sz', '-ais', action='store_true', help='Allow increasing the size of the original data type of a column')
@@ -1259,7 +1240,6 @@ if __name__ == "__main__":
     parser.add_argument('--mongo_uri', '-muri', type=str, default=None, help='MongoDB URI this replaces the other MongoDB arguments')
     parser.add_argument('--log_level', '-logl', default='INFO', help='Log level (DEBUG, INFO, WARNING, ERROR, CRITICAL)')
     args = parser.parse_args()
-    verbose = args.verbose
     batch_size = args.batch_size
     dump_data_stats = args.dump_data_stats
     sql_username = args.sql_username
@@ -1301,9 +1281,9 @@ if __name__ == "__main__":
     client = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=5000, unicode_decode_error_handler='ignore')
     try:
         client.server_info()
-        # print(client.server_info())
+        LOGGER.debug(client.server_info())
     except Exception:
-        print("Unable to connect to the server.")
+        LOGGER.error("Unable to connect to the server.")
 
     # Create SQL engine
     if sql_uri is not None:
@@ -1329,7 +1309,7 @@ if __name__ == "__main__":
     meta_lod = mongo_collection_to_list_of_dicts(meta)
     neem_collection_to_sql("neems",
                         meta_lod,
-                        sql_creator=sql_creator, verbose=verbose)
+                        sql_creator=sql_creator)
     meta_lod = list(reversed(meta_lod))
     batch_sz = batch_size
     first_n_batches = args.num_batches
@@ -1353,9 +1333,8 @@ if __name__ == "__main__":
                 coll = db.get_collection(id + '_' + cname)
                 lod = mongo_collection_to_list_of_dicts(coll)
                 if cname in ['annotations', 'triples']:
-                    if verbose:
-                        print("len(lod)", len(lod))
-                        print("neem_id", id)
+                    LOGGER.debug("len(lod)", len(lod))
+                    LOGGER.debug("neem_id", id)
                     t2sql.mongo_triples_to_graph(lod, skip=skip_bad_triples)
                     lod = t2sql.graph_to_dict()
                 elif cname == 'tf':
@@ -1363,8 +1342,7 @@ if __name__ == "__main__":
                 verification.update(1)
         verification_time += verification.format_dict['elapsed']
         verification.close()
-    if verbose:
-        print("tf_len", tf_len)
+    LOGGER.debug("tf_len", tf_len)
     total_time += verification_time
 
     # Creating & Executing SQL commands from the data
@@ -1410,12 +1388,12 @@ if __name__ == "__main__":
                 neem_collection_to_sql(coll['name'],
                                     coll['data'],
                                     sql_creator=sql_creator,
-                                    neem_id=coll['id'], pbar=[neem_pbar, all_neems_pbar], verbose=verbose)
+                                    neem_id=coll['id'], pbar=[neem_pbar, all_neems_pbar])
                 total_tf_creation_time += neem_pbar.format_dict['elapsed']
             else:
                 dict_to_sql(coll['data'],
                             predicate_sql_creator,
-                            neem_id=coll['id'], pbar=[neem_pbar, all_neems_pbar], verbose=verbose)
+                            neem_id=coll['id'], pbar=[neem_pbar, all_neems_pbar])
                 total_triples_creation_time += neem_pbar.format_dict['elapsed']
             neem_pbar.close()
             data_times[coll['name']].append(neem_pbar.format_dict['elapsed'])
@@ -1431,15 +1409,15 @@ if __name__ == "__main__":
     total_time += total_creation_time
 
     data_stats = {'data_sizes':data_sizes, 'data_times':data_times}
-    print("Verification Time = ", verification_time)
-    print("Meta Time = ", total_meta_time)
-    print("TF Creation Time = ", total_tf_creation_time)
-    print("Triples Creation Time = ", total_triples_creation_time)
-    print("Creation Time = ", total_creation_time)
-    print("Predicate Linking Time = ", sum(data_times['predicate_indexing']))
-    print("TF Triples Linking Time = ", sum(data_times['tf_triples_linking']))
-    print("Data Upload Time = ", sum(data_times['data_upload']))
-    print("Total Time = ", total_time)
+    LOGGER.info("Verification Time = ", verification_time)
+    LOGGER.info("Meta Time = ", total_meta_time)
+    LOGGER.info("TF Creation Time = ", total_tf_creation_time)
+    LOGGER.info("Triples Creation Time = ", total_triples_creation_time)
+    LOGGER.info("Creation Time = ", total_creation_time)
+    LOGGER.info("Predicate Linking Time = ", sum(data_times['predicate_indexing']))
+    LOGGER.info("TF Triples Linking Time = ", sum(data_times['tf_triples_linking']))
+    LOGGER.info("Data Upload Time = ", sum(data_times['data_upload']))
+    LOGGER.info("Total Time = ", total_time)
 
     if dump_data_stats:
         with open('data_stats.pickle', 'wb') as f:
