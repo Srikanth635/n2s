@@ -187,6 +187,9 @@ class SQLCreator():
         """
         self.sql_table_creation_cmds.update(sql_creator.sql_table_creation_cmds)
         self.data_to_insert.update(sql_creator.data_to_insert)
+        self.data_bytes.update(sql_creator.data_bytes)
+        self.data_types.update(sql_creator.data_types)
+        self.meta_data.update(sql_creator.meta_data)
     
     def insert_column_and_value(self, table_name:str, column_name:str, v: object, null_prev_rows=True) -> None:
         """Insert a column and value into the data_to_insert dictionary
@@ -912,12 +915,15 @@ class SQLCreator():
                 cmd = re.sub("(@)","_", cmd)
             # if 'range' in cmd:
             #     cmd = re.sub("range","range_", cmd)
+            try:
+                # To execute the SQL query
+                conn.execute(text(cmd))
 
-            # To execute the SQL query
-            conn.execute(text(cmd))
-
-            # To commit the changes
-            conn.commit()
+                # To commit the changes
+                conn.commit()
+            except Exception as e:
+                LOGGER.debug(f"ERROR: {e}")
+                LOGGER.debug(f"CMD: {cmd}")
 
             if pbar is not None:
                 pbar.update(1)
