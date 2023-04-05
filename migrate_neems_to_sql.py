@@ -856,9 +856,7 @@ class SQLCreator():
         conn = self.engine.connect()
 
         # Get the inertion cmds
-        conversion_time_s = time()
         sql_insert_cmds = self.get_insert_rows_commands()
-        LOGGER.debug("Dicitionary to Commands Conversion Time = ", time() - conversion_time_s)
 
         if drop_tables:
             self._drop_tables(self.data_to_insert, conn)
@@ -954,20 +952,16 @@ def neem_collection_to_sql(name: str, collection: List[Dict], sql_creator: SQLCr
     if neem_id is not None:
         [doc.update({"neem_id":deepcopy(neem_id)}) for doc in collection]
 
-    start = time()
     for doc in collection:
         meta_sql_creator.find_relationships(name, doc)
     meta_sql_creator.filter_null_tables()
     sql_creator.not_always_there.extend(meta_sql_creator.not_always_there)
     sql_creator.one_item_lists.extend(meta_sql_creator.one_item_lists)
-    LOGGER.debug("find_relationships_time = ", time() - start)
 
-    start = time()
     for doc in collection:
         sql_creator.convert_to_sql(name, doc)
         if pbar is not None:
             [pb.update(1) for pb in pbar]
-    LOGGER.debug("convert_to_sql_time = ", time() - start)
 
     if neem_id is not None:
         sql_creator.add_fk("neems", name, "neem_id", parent_col_name="_id")
@@ -1333,8 +1327,8 @@ if __name__ == "__main__":
                 coll = db.get_collection(id + '_' + cname)
                 lod = mongo_collection_to_list_of_dicts(coll)
                 if cname in ['annotations', 'triples']:
-                    LOGGER.debug("len(lod)", len(lod))
-                    LOGGER.debug("neem_id", id)
+                    LOGGER.debug(f"number of docs for {cname} is {len(lod)}")
+                    LOGGER.debug(f"neem_id is {id}")
                     t2sql.mongo_triples_to_graph(lod, skip=skip_bad_triples)
                     lod = t2sql.graph_to_dict()
                 elif cname == 'tf':
@@ -1342,7 +1336,7 @@ if __name__ == "__main__":
                 verification.update(1)
         verification_time += verification.format_dict['elapsed']
         verification.close()
-    LOGGER.debug("tf_len", tf_len)
+    LOGGER.debug(f"tf data size is {tf_len}")
     total_time += verification_time
 
     # Creating & Executing SQL commands from the data
