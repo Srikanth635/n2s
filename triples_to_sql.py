@@ -11,6 +11,7 @@ from pymongo.collection import Collection
 from datetime import datetime
 from bson.decimal128 import Decimal128
 from typing import Optional, Tuple, Union, List, Dict
+import logging
 
 
 xsd2py = {XSD.integer: int, XSD.float: float, XSD.double: float, XSD.boolean: bool, XSD.dateTime: datetime,
@@ -21,6 +22,28 @@ py2xsd = {int: XSD.integer, float: XSD.double, bool: XSD.boolean, datetime: XSD.
 xsd2sql = {XSD.integer: 'INT', XSD.float: 'DOUBLE', XSD.double: 'DOUBLE', XSD.boolean: 'BOOL',
                 XSD.positiveInteger: 'INT UNSIGNED', XSD.dateTime: 'DATETIME', XSD.date: 'DATE', XSD.time: 'TIME',
                 XSD.string: 'TEXT', XSD.anyURI: 'VARCHAR(255)'}
+
+class CustomFormatter(logging.Formatter):
+
+    grey = "\x1b[38;20m"
+    yellow = "\x1b[33;20m"
+    red = "\x1b[31;20m"
+    bold_red = "\x1b[31;1m"
+    reset = "\x1b[0m"
+    format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s (%(filename)s:%(lineno)d)"
+
+    FORMATS = {
+        logging.DEBUG: grey + format + reset,
+        logging.INFO: grey + format + reset,
+        logging.WARNING: yellow + format + reset,
+        logging.ERROR: red + format + reset,
+        logging.CRITICAL: bold_red + format + reset
+    }
+
+    def format(self, record):
+        log_fmt = self.FORMATS.get(record.levelno)
+        formatter = logging.Formatter(log_fmt)
+        return formatter.format(record)
 
 
 def get_byte_size(value: object) -> int:
@@ -92,9 +115,12 @@ def get_sql_type_from_pyval(val: object, signed: Optional[bool]=True) -> Tuple[s
 
 
 class TriplesToSQL:
-    def __init__(self) -> None:
+    def __init__(self, logger: Optional[logging.Logger]=None) -> None:
         """Initializes the TriplesToSQL class.
         This class is used to deal with triples data in different formats, and convert it to and from SQL.
+
+        Args:
+            logger (Optional[logging.Logger], optional): [The logger to use. Defaults to None.]
         
         Examples:
             >>> from triples_to_sql import TriplesToSQL
@@ -134,6 +160,7 @@ class TriplesToSQL:
         self.ns_str = {knsname: str(kns) for knsname, kns in zip(known_ns_names, known_ns)}
         self.reset_graph()
         self.property_sql_type = {}
+        self.logger = logger
     
     def reset_graph(self) -> None:
         """reset the graph by creating a new one and binding the namespaces.
@@ -261,6 +288,8 @@ class TriplesToSQL:
                 v = [docs['s'], docs['p'], docs['o']]
             else:
                 if skip:
+                    if self.logger is not None:
+                        self.logger.warning(f'Missing Object Column in triple keys {list(docs.keys())}, the row is skipped.')
                     continue
                 raise ValueError(f'Missing Object value in triple {docs}')
             new_v = []

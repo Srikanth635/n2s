@@ -1,26 +1,85 @@
-import os
 from pymongo import MongoClient
 from pymongo.collection import Collection
-from pymongo.cursor import CursorType
 from bson.objectid import ObjectId
 from bson.decimal128 import Decimal128
-from bson import errors
 import numpy as np
 from datetime import datetime
 import re
 from time import time
-import sqlalchemy.pool as pool
 from sqlalchemy import create_engine, Engine, Connection
-from sqlalchemy import text, exc
+from sqlalchemy import text
 from copy import deepcopy
 from orderedset import OrderedSet
-from triples_to_sql import TriplesToSQL, get_byte_size, get_sql_type_from_pyval
+from triples_to_sql import TriplesToSQL, get_sql_type_from_pyval
 from tqdm import tqdm
 import argparse
 import pickle
-from typing import Optional, Callable, Union, Tuple, List, Dict
+from typing import Optional, Callable, Tuple, List, Dict
+import logging
 
 
+class CustomFormatter(logging.Formatter):
+
+    grey = "\x1b[38;20m"
+    yellow = "\x1b[33;20m"
+    red = "\x1b[31;20m"
+    bold_red = "\x1b[31;1m"
+    reset = "\x1b[0m"
+    format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s (%(filename)s:%(lineno)d)"
+
+    FORMATS = {
+        logging.DEBUG: grey + format + reset,
+        logging.INFO: grey + format + reset,
+        logging.WARNING: yellow + format + reset,
+        logging.ERROR: red + format + reset,
+        logging.CRITICAL: bold_red + format + reset
+    }
+
+    def format(self, record):
+        log_fmt = self.FORMATS.get(record.levelno)
+        formatter = logging.Formatter(log_fmt)
+        return formatter.format(record)
+
+sql_str_types = ['CHAR', 'VARCHAR', 'TEXT', 'MEDIUMTEXT', 'LONGTEXT']
+
+def sql_type_to_byte_size(sql_type: str) -> int:
+    """Get the byte size of the sql type
+
+    Args:
+        sql_type ([str]): [sql type]
+    
+    Raises:
+        ValueError: [if the sql type is not known]
+
+    Returns:
+        [int]: [byte size of the sql type]
+    """
+    sql_type = sql_type.upper()
+    if '(' in sql_type:
+        new_sql_type = sql_type.split('(')[0]
+        if new_sql_type in ['VARCHAR', 'CHAR']:
+            return int(sql_type.split('(')[1].split(')')[0])
+        sql_type = new_sql_type
+    if sql_type == 'TEXT':
+        return 65536
+    if sql_type == 'MEDIUMTEXT':
+        return 16777216
+    if sql_type == 'LONGTEXT':
+        return 4294967296
+    numeric_type_size = {'TINYINT': 1,
+                    'SMALLINT': 2,
+                    'MEDIUMINT': 3,
+                    'INT': 4,
+                    'BIGINT': 8,
+                    'FLOAT': 4,
+                    'DOUBLE': 8,
+                    'DECIMAL': 8,
+                    'BIT': 1,
+                    'BOOLEAN': 1,
+                    'SERIAL': 4}
+    if sql_type in numeric_type_size:
+        return numeric_type_size[sql_type]
+    raise ValueError(f"UNKOWN SQL TYPE {sql_type}")
 
 # mongo_to_python_conversions
 def mon2py(val: object, name: Optional[str]=None):
@@ -74,6 +133,8 @@ class SQLCreator():
                   value_mapping_func: Optional[Callable[[object, Optional[str]], object]]=None,
                   allowed_missing_percentage: Optional[int]=5,
                   tosql_func: Optional[Callable[[object, str], Tuple[str, int]]]=None,
+                  allow_increasing_size: Optional[bool]=False,
+                  allow_text_indexing: Optional[bool]=False,
                   verbose: Optional[bool]=False) -> None:
         """A class to create SQL tables (from python data structures) and insert data into them
 
@@ -82,6 +143,8 @@ class SQLCreator():
             value_mapping_func ([callable], optional): [function to convert the value from mongo to python type]. Defaults to None.
             allowed_missing_percentage (int, optional): [percentage of missing values allowed in a column]. Defaults to 5.
             tosql_func ([callable], optional): [function to convert the value from python to sql type]. Defaults to None.
+            allow_increasing_size (bool, optional): [whether to allow increasing the size of the column]. Defaults to False.
+            allow_text_indexing (bool, optional): [whether to allow indexing of text columns]. Defaults to False.
             verbose (bool, optional): [whether to print the progress]. Defaults to False.
         
         Example:
@@ -106,9 +169,12 @@ class SQLCreator():
         self.linked_table_names = OrderedSet()
         self.allowed_missing_percentage = allowed_missing_percentage
         self.tosql_func = tosql_func
-        self.data_bytes = {}
         self.verpose = verbose
-        self.sql_meta_data = self._get_sql_meta_data()
+        self.data_bytes = {}
+        self.data_types = {}
+        self.sql_meta_data, self.original_data_types, self.original_data_bytes = self._get_sql_meta_data()
+        self.allow_increasing_size = allow_increasing_size
+        self.allow_text_indexing = allow_text_indexing
 
     def reset_data(self) -> None:
         """Reset all data to empty .
@@ -135,7 +201,8 @@ class SQLCreator():
             null_prev_rows (bool, optional): [whether to insert NULL values for previous rows]. Defaults to True.
         """
         id = True if column_name in ['_id', 'neem_id'] else False
-        data_type, byte_sz = py2sql(v, id=id, type2sql_func=self.tosql_func, table_name=table_name, column_name=column_name)     
+        data_type, byte_sz = py2sql(v, id=id, type2sql_func=self.tosql_func, table_name=table_name, column_name=column_name)
+        data_type = str(data_type)     
         # Insertion
         key = table_name
         v = 'NULL' if v is None else v
@@ -148,6 +215,9 @@ class SQLCreator():
                     if column_name == '_id' and key == 'neems':
                         unique = True
             self.add_col(key, column_name, str(data_type), ISNULL=null, ISUNIQUE=unique)
+            if key not in self.data_types.keys():
+                self.data_types[key] = {}
+            self.data_types[key][column_name] = data_type
             if null_prev_rows:
                 # The NULL values here are for previous rows that did not have a value for this column
                 n_rows = len(self.data_to_insert[key]['ID']) - 1
@@ -162,9 +232,20 @@ class SQLCreator():
             if byte_sz is not None:
                 if self.data_bytes[key][column_name] is None:
                     self.data_bytes[key][column_name] = byte_sz
+                    self.data_types[key][column_name] = str(data_type)
                     self.sql_table_creation_cmds.add(f"ALTER TABLE {key} MODIFY COLUMN {column_name} {data_type};")
                 elif byte_sz > self.data_bytes[key][column_name]:
+                    if key in self.original_data_bytes:
+                        if column_name in self.original_data_bytes[key]:
+                            if byte_sz > self.original_data_bytes[key][column_name]:
+                                if not self.allow_increasing_size:
+                                    LOGGER.error(f"{key}.{column_name} has increased size: {self.original_data_bytes[key][column_name]} and {byte_sz}\
+                                                and allow_increasing_size argument is False")
+                                    raise ValueError()
+                                else:
+                                    LOGGER.warning(f"{key}.{column_name} has increased size: {self.original_data_bytes[key][column_name]} and {byte_sz}")
                     self.data_bytes[key][column_name] = byte_sz
+                    self.data_types[key][column_name] = str(data_type)
                     self.sql_table_creation_cmds.add(f"ALTER TABLE {key} MODIFY COLUMN {column_name} {data_type};")
 
     def find_relationships(self, key:str, obj:dict or list, parent_key: Optional[str]=None) -> None:
@@ -558,6 +639,26 @@ class SQLCreator():
         col_string += ';'
         self.sql_table_creation_cmds.add(col_string)
     
+    def create_index(self, table_name: str, column_name: str, idx_name: Optional[str]=None) -> None:
+        """ Create an index on a column in a table.
+
+        Args:
+            table_name (str): [The name of the table to add the index to.]
+            column_name (str): [The name of the column to add the index to.]
+            idx_name (str, optional): [The name of the index to add]. Defaults to None.
+        """
+        if idx_name is None:
+            idx_name = f"{table_name}_{column_name}_idx"
+        full_text = ""
+        if self.data_types[table_name][column_name] in ['TEXT', 'MEDIUMTEXT', 'LONGTEXT']:
+            if self.allow_text_indexing:
+                full_text = "FULLTEXT "
+            else:
+                LOGGER.warning(f"Indexing a text column is not recommended, so it is skipped. Column: {column_name} in table: {table_name},\
+                                if you want to index text columns, add the '--allow_text_indexing' or '-ati' argument.")
+                return
+        self.sql_table_creation_cmds.add(f"CREATE {full_text}INDEX IF NOT EXISTS {idx_name} ON {table_name} ({column_name});")
+    
     def get_value_from_sql(self, table_name: str, col_name: Optional[str]='ID', col_value_pairs: Optional[dict]=None) -> list:
         """Retrieve a list of values from a table column .
 
@@ -608,7 +709,7 @@ class SQLCreator():
                 if len(result) == 0:
                     result = 0
                 else:
-                    result = result[0]
+                    result = result[0] if result[0] is not None else 0
             except:
                 result = 0
         return result
@@ -718,14 +819,18 @@ class SQLCreator():
                 sql_insert_commands.append(f"INSERT INTO {key} {cols_str} VALUES {all_rows_str};")
         return sql_insert_commands
     
-    def _get_sql_meta_data(self) -> dict:
+    def _get_sql_meta_data(self) -> Tuple[dict, dict, dict]:
         """Get the names of the tables and columns from the database
 
         Returns:
-            [dict]: [The names of the tables and the columns in each table that are currently in the database]
+            [dict] : [The names of the tables and the columns in each table that are currently in the database]
+            [dict] : [Column data types]
+            [dict] : [Column data byte sizes]
         """
-        stmt =text("SELECT TABLE_NAME, COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = N'test'")
+        stmt =text("SELECT TABLE_NAME, COLUMN_NAME, COLUMN_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = N'test'")
         meta_data = {}
+        data_types = {}
+        data_bytes = {}
         with self.engine.connect() as conn:
             result = conn.execute(stmt)
             for row in result:
@@ -733,12 +838,14 @@ class SQLCreator():
                         meta_data[row[0]] = []
                 if row[1] != 'ID':
                     meta_data[row[0]].append(row[1])
+                    data_types[row[0]] = {row[1]: row[2]}
+                    data_bytes[row[0]] = {row[1]: sql_type_to_byte_size(row[2])}
             if self.verpose:
                 if result.rowcount == 0:
                     print("No data found")
                 else:
                     print(result.rowcount, "row(s) found")
-            return meta_data
+            return meta_data, data_types, data_bytes
 
     def upload_data_to_sql(self, drop_tables: Optional[bool] = True, verbose: Optional[bool] = False) -> Tuple[int, float]:
         """Upload the data to the database, this will create the tables and insert the data.
@@ -982,7 +1089,9 @@ def index_predicate_tables(sql_creator:SQLCreator, use_pbar: Optional[bool]=True
                     pbar.update(1)
                 if type(col_data[0]) != str:
                     continue
-                sql_creator.sql_table_creation_cmds.add(f"CREATE INDEX IF NOT EXISTS {key+'_'+col_name+'_idx'} ON {key} ({col_name});")
+                if col_name == 'ID':
+                    continue
+                sql_creator.create_index(key, col_name)
     pbar_time = 0
     if pbar is not None:
         pbar_time = pbar.format_dict['elapsed']
@@ -1130,20 +1239,25 @@ if __name__ == "__main__":
     parser.add_argument('--verbose', '-v', action='store_true', help='Print various intermediate outputs for debugging')
     parser.add_argument('--drop', '-d', action='store_true', help='Drop the tables that will be inserted first')
     parser.add_argument('--skip_bad_triples', '-sbt', action='store_true', help='Skip triples that are missing one of subject, predicate or object')
+    parser.add_argument('--allow_increasing_sz', '-ais', action='store_true', help='Allow increasing the size of the original data type of a column')
+    parser.add_argument('--allow_text_indexing', '-ati', action='store_true', help='Allow indexing text type columns')
+    parser.add_argument('--max_null_percentage', '-mnp', default=5, type=float, help='Maximum percentage of null values allowed in a column otherwise it will be put in a separate table')
     parser.add_argument('--batch_size', '-bs', default=4, type=int, help='Batch size (number of neems per batch) for uploading data to the database, \
         this is important for memory issues, if you encounter a memory problem try to reduce that number')
+    parser.add_argument('--num_batches', '-nb', default=0, type=int, help='Number of batches to upload the data to the database')
     parser.add_argument('--dump_data_stats', '-dds', action='store_true', help='Dump the data statistics like the sizes and time taken for each operation to a file')
     parser.add_argument('--sql_username', '-su', help='SQL username')
     parser.add_argument('--sql_password', '-sp', help='SQL password')
-    parser.add_argument('--sql_database', '-sd', help='SQL database name')
+    parser.add_argument('--sql_database', '-sd', help='SQL database name', required=True)
     parser.add_argument('--sql_host', '-sh', default="localhost", help='SQL host name')
     parser.add_argument('--sql_uri', '-suri', type=str, default=None, help='SQL URI this replaces the other SQL arguments')
     parser.add_argument('--mongo_username', '-mu', help='MongoDB username')
     parser.add_argument('--mongo_password', '-mp', help='MongoDB password')
     parser.add_argument('--mongo_database', '-md', default="neems", help='MongoDB database name')
     parser.add_argument('--mongo_host', '-mh', default="localhost", help='MongoDB host name')
-    parser.add_argument('--mongo_port', '-mpt', default=28015, type=int, help='MongoDB port number')
+    parser.add_argument('--mongo_port', '-mpt', default=27017, type=int, help='MongoDB port number')
     parser.add_argument('--mongo_uri', '-muri', type=str, default=None, help='MongoDB URI this replaces the other MongoDB arguments')
+    parser.add_argument('--log_level', '-logl', default='INFO', help='Log level (DEBUG, INFO, WARNING, ERROR, CRITICAL)')
     args = parser.parse_args()
     verbose = args.verbose
     batch_size = args.batch_size
@@ -1161,6 +1275,22 @@ if __name__ == "__main__":
     mongo_uri = args.mongo_uri
     drop = args.drop
     skip_bad_triples = args.skip_bad_triples
+    allow_increasing_sz = args.allow_increasing_sz
+    allow_text_indexing = args.allow_text_indexing
+    max_null_percentage = args.max_null_percentage
+    log_level = args.log_level
+
+    log_level_dict = {'DEBUG': logging.DEBUG, 'INFO': logging.INFO, 'WARNING': logging.WARNING, 'ERROR': logging.ERROR, 'CRITICAL': logging.CRITICAL}
+    # create logger with 'spam_application'
+    LOGGER = logging.getLogger("NEEM_SQLIZER")
+    LOGGER.setLevel(log_level_dict[log_level])
+
+    # create console handler with a higher log level
+    ch = logging.StreamHandler()
+    ch.setLevel(log_level_dict[log_level])
+
+    ch.setFormatter(CustomFormatter())
+    LOGGER.addHandler(ch)
 
     # Replace the uri string with your MongoDB deployment's connection string.
     if mongo_uri is not None:
@@ -1183,9 +1313,15 @@ if __name__ == "__main__":
     engine = create_engine(SQL_URI)
 
     db = client.neems
-    t2sql = TriplesToSQL()
-    sql_creator = SQLCreator(engine, tosql_func=lambda v, table_name:get_sql_type_from_pyval(v))
-    predicate_sql_creator = SQLCreator(engine, tosql_func=t2sql.get_sql_type)
+    t2sql = TriplesToSQL(logger=LOGGER)
+    sql_creator = SQLCreator(engine, tosql_func=lambda v, table_name:get_sql_type_from_pyval(v),
+                             allow_increasing_size=allow_increasing_sz,
+                             allow_text_indexing=allow_text_indexing,
+                             allowed_missing_percentage=max_null_percentage)
+    predicate_sql_creator = SQLCreator(engine, tosql_func=t2sql.get_sql_type,
+                             allow_increasing_size=allow_increasing_sz,
+                             allow_text_indexing=allow_text_indexing,
+                             allowed_missing_percentage=max_null_percentage)
 
 
     # Adding meta data
@@ -1196,7 +1332,7 @@ if __name__ == "__main__":
                         sql_creator=sql_creator, verbose=verbose)
     meta_lod = list(reversed(meta_lod))
     batch_sz = batch_size
-    first_n_batches = 0
+    first_n_batches = args.num_batches
     start_from = 0
     meta_lod_batches = [meta_lod[i:i + batch_sz] for i in range(0, len(meta_lod), batch_sz)]
     first_n_batches = first_n_batches if first_n_batches > 0 else len(meta_lod_batches) - start_from
@@ -1288,6 +1424,7 @@ if __name__ == "__main__":
 
         link_and_upload_time = link_and_upload(sql_creator, predicate_sql_creator, data_sizes, data_times, reset=True, drop=drop)
         total_time += link_and_upload_time
+        drop = False
 
     client.close()
     total_time += total_meta_time
