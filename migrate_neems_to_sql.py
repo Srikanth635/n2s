@@ -180,6 +180,7 @@ class SQLCreator():
         """
         self.sql_table_creation_cmds = OrderedSet()
         self.data_to_insert = {}
+        self.sql_meta_data, self.original_data_types, self.original_data_bytes = self._get_sql_meta_data()
     
     def merge_with(self, sql_creator: 'SQLCreator') -> None:
         """Merge another SQL creator .
@@ -209,7 +210,7 @@ class SQLCreator():
         key = table_name
         v = 'NULL' if v is None else v
         v = -1 if v == float('inf') else v
-        if column_name not in self.data_to_insert[key].keys():
+        if column_name not in self.data_to_insert[key].keys() and v != 'NULL':
             null, unique = True, False
             if data_type is not None:
                 if id:
@@ -979,7 +980,18 @@ def neem_collection_to_sql(name: str, collection: List[Dict], sql_creator: SQLCr
                     return True
                 else:
                     return doc_val == filter_val
-            collection = [doc for doc in collection if all([filter_cond(doc[k],v) for k, v in neem_filters.items() if k in doc])]
+                
+            coll_cp = deepcopy(collection)
+            for doc in coll_cp:
+                for k, v in neem_filters.items():
+                    if k in doc:
+                        if not filter_cond(doc[k],v):
+                            collection.remove(doc)
+                            break
+                    else:
+                        collection.remove(doc)
+                        break
+
             if len(collection) == 0:
                 LOGGER.info("NO NEEMS FOUND THAT CONFORM TO THE GIVEN FILTERS")
                 
@@ -1409,7 +1421,7 @@ if __name__ == "__main__":
     for batch_idx, batch in enumerate(meta_lod_batches[start_from:start_from+first_n_batches]):
         all_docs = 0
         collections = {}
-        meta_data = tqdm(total=batch_sz*4, desc=f"Collecting & Restructuring Data (batch {batch_idx+start_from+1}/{n_batches})", colour='#FFA500')
+        meta_data = tqdm(total=len(batch)*4, desc=f"Collecting & Restructuring Data (batch {batch_idx+start_from+1}/{n_batches})", colour='#FFA500')
         for d_i, doc in enumerate(batch):
 
             id = str(doc['_id'])
