@@ -2,3 +2,4 @@ __pycache__/*
 *.pyc
 *.pickle
 *.json
+stdout_file.txt

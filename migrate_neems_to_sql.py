@@ -17,6 +17,7 @@ import pickle
 from typing import Optional, Callable, Tuple, List, Dict
 import logging
 import yaml
+import sys
 
 
 class CustomFormatter(logging.Formatter):
@@ -1316,7 +1317,7 @@ if __name__ == "__main__":
     LOGGER.setLevel(log_level_dict[log_level])
 
     # create console handler with a higher log level
-    ch = logging.StreamHandler()
+    ch = logging.StreamHandler(open("stdout_file.txt", "w"))
     ch.setLevel(log_level_dict[log_level])
 
     ch.setFormatter(CustomFormatter())
