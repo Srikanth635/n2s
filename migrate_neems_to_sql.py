@@ -20,6 +20,8 @@ import yaml
 import sys
 
 
+
+
 class CustomFormatter(logging.Formatter):
 
     grey = "\x1b[38;20m"
@@ -42,6 +44,17 @@ class CustomFormatter(logging.Formatter):
         log_fmt = self.FORMATS.get(record.levelno)
         formatter = logging.Formatter(log_fmt)
         return formatter.format(record)
+
+# create logger with 'spam_application'
+LOGGER = logging.getLogger("NEEM_SQLIZER")
+LOGGER.setLevel(logging.INFO)
+
+# create console handler with a higher log level
+ch = logging.StreamHandler(open("stdout_file.txt", "w"))
+ch.setLevel(logging.INFO)
+
+ch.setFormatter(CustomFormatter())
+LOGGER.addHandler(ch)
 
 sql_str_types = ['CHAR', 'VARCHAR', 'TEXT', 'MEDIUMTEXT', 'LONGTEXT']
 
@@ -211,7 +224,9 @@ class SQLCreator():
         key = table_name
         v = 'NULL' if v is None else v
         v = -1 if v == float('inf') else v
-        if column_name not in self.data_to_insert[key].keys() and v != 'NULL':
+        if column_name == 'id':
+            column_name = '_id'
+        if column_name not in self.data_to_insert[key].keys():
             null, unique = True, False
             if data_type is not None:
                 if id:
@@ -869,12 +884,14 @@ class SQLCreator():
             self._drop_tables(self.data_to_insert, conn)
 
         # Create tables
+        LOGGER.info(self.sql_table_creation_cmds)
         pbar = tqdm(total=len(self.sql_table_creation_cmds),desc="Executing Schema Creation Commands",colour='#FFA500')
         self._execute_cmds(self.sql_table_creation_cmds, conn, pbar=pbar)
         pbar_time = pbar.format_dict['elapsed']
         pbar.close()
 
         # Insert data
+        LOGGER.info(sql_insert_cmds)
         pbar = tqdm(total=len(sql_insert_cmds), desc="Executing Insertion Commands",colour='#FFA500')
         conn.execute(text("SET FOREIGN_KEY_CHECKS=0;"))
         self._execute_cmds(sql_insert_cmds, conn, pbar=pbar)
@@ -1038,14 +1055,12 @@ def json_to_sql(top_table_name:str,
         pbar (tqdm, optional): [The progress bar]. Defaults to None.
     """
     n_doc = 0
-    sql_creator = SQLCreator(value_mapping_func=value_mapping_func, engine=sqlalachemy_engine)
+    sql_creator = SQLCreator(value_mapping_func=value_mapping_func, engine=sqlalachemy_engine, tosql_func=lambda v, table_name:get_sql_type_from_pyval(v))
     funcs = [sql_creator.find_relationships, sql_creator.convert_to_sql]
     for f_i, func in enumerate(funcs):
         for doc in json_data:
-            name = None
-            if n_doc == 0:
-                name = top_table_name
-            elif filter_doc is not None:
+            name = top_table_name
+            if filter_doc is not None:
                 name, doc, iri = filter_doc(doc)
                 if doc is None:
                     continue
@@ -1312,16 +1327,7 @@ if __name__ == "__main__":
     start_batch = args.start_batch
 
     log_level_dict = {'DEBUG': logging.DEBUG, 'INFO': logging.INFO, 'WARNING': logging.WARNING, 'ERROR': logging.ERROR, 'CRITICAL': logging.CRITICAL}
-    # create logger with 'spam_application'
-    LOGGER = logging.getLogger("NEEM_SQLIZER")
-    LOGGER.setLevel(log_level_dict[log_level])
 
-    # create console handler with a higher log level
-    ch = logging.StreamHandler(open("stdout_file.txt", "w"))
-    ch.setLevel(log_level_dict[log_level])
-
-    ch.setFormatter(CustomFormatter())
-    LOGGER.addHandler(ch)
 
     if neem_filters_yaml is not None:
         with open(neem_filters_yaml, "r") as stream:

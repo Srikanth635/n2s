@@ -46,7 +46,7 @@ class CustomFormatter(logging.Formatter):
         return formatter.format(record)
 
 
-def get_byte_size(value: object) -> int:
+def get_byte_size(value: object) -> Optional[int]:
     """Returns the byte size of the given value .
 
     Args:
@@ -56,7 +56,7 @@ def get_byte_size(value: object) -> int:
         ValueError: [if the type of the value is unknown.]
 
     Returns:
-        int: [the byte size of the value.]
+        Optional[int]: [The byte size of the value.]
     """
     if type(value) == str:
         return len(value.encode('utf-8'))
@@ -66,8 +66,10 @@ def get_byte_size(value: object) -> int:
         return 8
     elif type(value) == datetime:
         return 8
+    elif value == None:
+        return None
     else:
-        raise ValueError('Unknown type')
+        raise ValueError(f'Unknown type {type(value)}')
 
 def get_sql_type_from_pyval(val: object, signed: Optional[bool]=True) -> Tuple[str, int]:
     """Returns the sql type and the byte size of the given value.
@@ -109,6 +111,8 @@ def get_sql_type_from_pyval(val: object, signed: Optional[bool]=True) -> Tuple[s
             byte_size = 2**32-1
     elif pytype in py2xsd:
         sqltype = xsd2sql[py2xsd[pytype]]
+    elif val == None:
+        return 'TEXT', 2**16-1
     else:
         raise ValueError('Unknown type')
     return sqltype, byte_size
