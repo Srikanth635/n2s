@@ -16,6 +16,7 @@ import argparse
 import pickle
 from typing import Optional, Callable, Tuple, List, Dict
 import logging
+import yaml
 
 
 class CustomFormatter(logging.Formatter):
@@ -26,10 +27,11 @@ class CustomFormatter(logging.Formatter):
     bold_red = "\x1b[31;1m"
     reset = "\x1b[0m"
     format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s (%(filename)s:%(lineno)d)"
+    info_format = format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 
     FORMATS = {
         logging.DEBUG: grey + format + reset,
-        logging.INFO: grey + format + reset,
+        logging.INFO: grey + info_format + reset,
         logging.WARNING: yellow + format + reset,
         logging.ERROR: red + format + reset,
         logging.CRITICAL: bold_red + format + reset
@@ -931,7 +933,8 @@ class SQLCreator():
 
 
 def neem_collection_to_sql(name: str, collection: List[Dict], sql_creator: SQLCreator,
-                            neem_id: Optional[ObjectId]=None, pbar: Optional[List[tqdm]]=None) -> None:
+                            neem_id: Optional[ObjectId]=None, pbar: Optional[List[tqdm]]=None,
+                            neem_filters: Optional[dict]=None) -> List[Dict]:
     """Convert a collection of documents to sql commands.
     
     Args:
@@ -940,6 +943,7 @@ def neem_collection_to_sql(name: str, collection: List[Dict], sql_creator: SQLCr
         sql_creator (SQLCreator): [The sql creator object]
         neem_id (ObjectId, optional): [The neem_id of the collection if the collection belongs to a neem]. Defaults to None.
         pbar (tqdm, optional): [The progress bar]. Defaults to None.
+        neem_filters (dict, optional): [The filters used to select certain neems that conform with conditions in the filters]. Defaults to None.
     """
         
     if len(collection) == 0:
@@ -952,6 +956,11 @@ def neem_collection_to_sql(name: str, collection: List[Dict], sql_creator: SQLCr
         collection = [doc for doc in collection if doc['_id'] not in ids]
         if len(collection) == 0:
             LOGGER.info("NO NEW NEEMS FOUND")
+    
+        if neem_filters is not None:
+            collection = [doc for doc in collection if all([doc[k] == v for k, v in neem_filters.items() if k in doc])]
+            if len(collection) == 0:
+                LOGGER.info("NO NEEMS FOUND THAT CONFORM TO THE GIVEN FILTERS")
                 
     meta_sql_creator = SQLCreator(engine=sql_creator.engine)
 
@@ -971,6 +980,8 @@ def neem_collection_to_sql(name: str, collection: List[Dict], sql_creator: SQLCr
 
     if neem_id is not None:
         sql_creator.add_fk("neems", name, "neem_id", parent_col_name="_id")
+    
+    return collection
 
 
 def json_to_sql(top_table_name:str,
@@ -1226,6 +1237,7 @@ if __name__ == "__main__":
     parser.add_argument('--batch_size', '-bs', default=4, type=int, help='Batch size (number of neems per batch) for uploading data to the database, \
         this is important for memory issues, if you encounter a memory problem try to reduce that number')
     parser.add_argument('--num_batches', '-nb', default=0, type=int, help='Number of batches to upload the data to the database')
+    parser.add_argument('--start_batch', '-sb', default=0, type=int, help='Start uploading from this batch')
     parser.add_argument('--dump_data_stats', '-dds', action='store_true', help='Dump the data statistics like the sizes and time taken for each operation to a file')
     parser.add_argument('--sql_username', '-su', help='SQL username')
     parser.add_argument('--sql_password', '-sp', help='SQL password')
@@ -1239,6 +1251,7 @@ if __name__ == "__main__":
     parser.add_argument('--mongo_port', '-mpt', default=27017, type=int, help='MongoDB port number')
     parser.add_argument('--mongo_uri', '-muri', type=str, default=None, help='MongoDB URI this replaces the other MongoDB arguments')
     parser.add_argument('--log_level', '-logl', default='INFO', help='Log level (DEBUG, INFO, WARNING, ERROR, CRITICAL)')
+    parser.add_argument('--neem_filters_yaml', '-nfy', type=str, default=None, help='YAML file containing the neem filters')
     args = parser.parse_args()
     batch_size = args.batch_size
     dump_data_stats = args.dump_data_stats
@@ -1259,6 +1272,9 @@ if __name__ == "__main__":
     allow_text_indexing = args.allow_text_indexing
     max_null_percentage = args.max_null_percentage
     log_level = args.log_level
+    num_batches = args.num_batches
+    neem_filters_yaml = args.neem_filters_yaml
+    start_batch = args.start_batch
 
     log_level_dict = {'DEBUG': logging.DEBUG, 'INFO': logging.INFO, 'WARNING': logging.WARNING, 'ERROR': logging.ERROR, 'CRITICAL': logging.CRITICAL}
     # create logger with 'spam_application'
@@ -1272,9 +1288,22 @@ if __name__ == "__main__":
     ch.setFormatter(CustomFormatter())
     LOGGER.addHandler(ch)
 
+    if neem_filters_yaml is not None:
+        with open(neem_filters_yaml, "r") as stream:
+            try:
+                neem_filters = yaml.safe_load(stream)
+                LOGGER.debug(neem_filters)
+            except yaml.YAMLError as exc:
+                LOGGER.error(exc)
+                raise
+    else:
+        neem_filters = None
+
     # Replace the uri string with your MongoDB deployment's connection string.
     if mongo_uri is not None:
         MONGODB_URI = mongo_uri
+    elif mongo_username is None and mongo_password is None:
+        MONGODB_URI = f"mongodb://{mongo_host}:{mongo_port}/{mongo_database}"
     else:
         MONGODB_URI = f"mongodb://{mongo_username}:{mongo_password}@{mongo_host}:{mongo_port}/{mongo_database}"
     # set a 5-second connection timeout
@@ -1283,7 +1312,8 @@ if __name__ == "__main__":
         client.server_info()
         LOGGER.debug(client.server_info())
     except Exception:
-        LOGGER.error("Unable to connect to the server.")
+        LOGGER.error("Unable to connect to the MongoDB server.")
+        raise
 
     # Create SQL engine
     if sql_uri is not None:
@@ -1307,24 +1337,25 @@ if __name__ == "__main__":
     # Adding meta data
     meta = db.meta
     meta_lod = mongo_collection_to_list_of_dicts(meta)
-    neem_collection_to_sql("neems",
+    meta_lod= neem_collection_to_sql("neems",
                         meta_lod,
-                        sql_creator=sql_creator)
+                        sql_creator=sql_creator,
+                        neem_filters=neem_filters)
     meta_lod = list(reversed(meta_lod))
     batch_sz = batch_size
-    first_n_batches = args.num_batches
-    start_from = 0
+    first_n_batches = num_batches
+    start_from = start_batch
     meta_lod_batches = [meta_lod[i:i + batch_sz] for i in range(0, len(meta_lod), batch_sz)]
     first_n_batches = first_n_batches if first_n_batches > 0 else len(meta_lod_batches) - start_from
     coll_names = ['tf', 'triples', 'annotations', 'inferred']
     verification_time = 0
     total_time = 0
     tf_len = []
-
+    n_batches = len(meta_lod_batches[start_from:start_from+first_n_batches])
     # Verifying data
     for batch_idx, batch in enumerate(meta_lod_batches[start_from:start_from+first_n_batches]):
 
-        verification = tqdm(total=len(batch)*4, desc=f"Verifying Data (batch {batch_idx+start_from})", colour='#FFA500')
+        verification = tqdm(total=len(batch)*4, desc=f"Verifying Data (batch {batch_idx+start_from+1}/{n_batches})", colour='#FFA500')
 
         for d_i, doc in enumerate(batch):
 
@@ -1357,7 +1388,7 @@ if __name__ == "__main__":
     for batch_idx, batch in enumerate(meta_lod_batches[start_from:start_from+first_n_batches]):
         all_docs = 0
         collections = {}
-        meta_data = tqdm(total=batch_sz*4, desc=f"Collecting & Restructuring Data (batch {batch_idx+start_from})", colour='#FFA500')
+        meta_data = tqdm(total=batch_sz*4, desc=f"Collecting & Restructuring Data (batch {batch_idx+start_from+1}/{n_batches})", colour='#FFA500')
         for d_i, doc in enumerate(batch):
 
             id = str(doc['_id'])
@@ -1409,15 +1440,15 @@ if __name__ == "__main__":
     total_time += total_creation_time
 
     data_stats = {'data_sizes':data_sizes, 'data_times':data_times}
-    LOGGER.info("Verification Time = ", verification_time)
-    LOGGER.info("Meta Time = ", total_meta_time)
-    LOGGER.info("TF Creation Time = ", total_tf_creation_time)
-    LOGGER.info("Triples Creation Time = ", total_triples_creation_time)
-    LOGGER.info("Creation Time = ", total_creation_time)
-    LOGGER.info("Predicate Linking Time = ", sum(data_times['predicate_indexing']))
-    LOGGER.info("TF Triples Linking Time = ", sum(data_times['tf_triples_linking']))
-    LOGGER.info("Data Upload Time = ", sum(data_times['data_upload']))
-    LOGGER.info("Total Time = ", total_time)
+    LOGGER.info(f"Verification Time = {verification_time}")
+    LOGGER.info(f"Meta Time = {total_meta_time}")
+    LOGGER.info(f"TF Creation Time = {total_tf_creation_time}")
+    LOGGER.info(f"Triples Creation Time = {total_triples_creation_time}")
+    LOGGER.info(f"Total Creation Time = {total_creation_time}")
+    LOGGER.info(f"Predicate Linking Time = {sum(data_times['predicate_indexing'])}")
+    LOGGER.info(f"TF Triples Linking Time = {sum(data_times['tf_triples_linking'])}")
+    LOGGER.info(f"Data Upload Time = {sum(data_times['data_upload'])}")
+    LOGGER.info(f"Total Time = {total_time}")
 
     if dump_data_stats:
         with open('data_stats.pickle', 'wb') as f:
