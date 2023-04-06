@@ -958,7 +958,28 @@ def neem_collection_to_sql(name: str, collection: List[Dict], sql_creator: SQLCr
             LOGGER.info("NO NEW NEEMS FOUND")
     
         if neem_filters is not None:
-            collection = [doc for doc in collection if all([doc[k] == v for k, v in neem_filters.items() if k in doc])]
+            def filter_cond(doc_val, filter_val):
+                if isinstance(filter_val, list):
+                    if isinstance(doc_val, list):
+                        return all([val in doc_val for val in filter_val])
+                    else:
+                        return doc_val in filter_val
+                elif isinstance(filter_val, dict):
+                    if not isinstance(doc_val, dict):
+                        LOGGER.warning(f"FILTERS: {filter_val} is of type dict but the document value: {doc_val} is not of type dict")
+                        return False
+                    all_true = True
+                    for k, v in filter_val.items():
+                        if k in doc_val:
+                            all_true = all_true and filter_cond(doc_val[k], v)
+                            if not all_true:
+                                return False
+                        else:
+                            return False
+                    return True
+                else:
+                    return doc_val == filter_val
+            collection = [doc for doc in collection if all([filter_cond(doc[k],v) for k, v in neem_filters.items() if k in doc])]
             if len(collection) == 0:
                 LOGGER.info("NO NEEMS FOUND THAT CONFORM TO THE GIVEN FILTERS")
                 
