@@ -289,7 +289,7 @@ class TriplesToSQL:
             else:
                 if skip:
                     if self.logger is not None:
-                        self.logger.warning(f'Missing Object Column in triple keys {list(docs.keys())}, the row is skipped.')
+                        self.logger.warning(f"Missing Object Column in triple keys {list(docs.keys())}, doc_id: {docs['_id']}, the row is skipped.")
                 else:
                     raise ValueError(f'Missing Object value in triple {docs}')
             new_v = []

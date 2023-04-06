@@ -1,7 +1,7 @@
 # The available filters are any column in the meta file of the neems database
 # at the time of writing this they were [_id, created_at, created_by, description, image, keywords, name, url, visibility, mail, projects, repo]
 visibility: True
-# created_by: "Abhijit"
-keywords:
-  - "Kitchen"
-  - "Robot"
+created_by: "Abhijit"
+# keywords:
+#   - "Kitchen"
+#   - "Robot"

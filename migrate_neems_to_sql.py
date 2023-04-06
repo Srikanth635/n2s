@@ -844,7 +844,7 @@ class SQLCreator():
             if result.rowcount == 0:
                 LOGGER.debug("No data found")
             else:
-                LOGGER.debug(result.rowcount, "row(s) found")
+                LOGGER.debug(f"{result.rowcount} row(s) found")
             return meta_data, data_types, data_bytes
 
     def upload_data_to_sql(self, drop_tables: Optional[bool] = True) -> Tuple[int, float]:
@@ -991,7 +991,8 @@ def neem_collection_to_sql(name: str, collection: List[Dict], sql_creator: SQLCr
                     else:
                         collection.remove(doc)
                         break
-
+            for doc in collection:
+                LOGGER.info(f"FOUND NEW NEEM: {doc['_id']}, Visibility: {doc['visibility']}, Created_by: {doc['created_by']}")
             if len(collection) == 0:
                 LOGGER.info("NO NEEMS FOUND THAT CONFORM TO THE GIVEN FILTERS")
                 
@@ -1065,7 +1066,7 @@ def json_to_sql(top_table_name:str,
         if f_i == 0:
             sql_creator.filter_null_tables()
     sql_creator._reference_to_existing_table()
-    LOGGER.debug("number_of_json_documents = ", n_doc)
+    LOGGER.debug(f"number_of_json_documents = {n_doc}")
     sql_creator.upload_data_to_sql(drop_tables=drop_tables)
 
 def dict_to_sql(data: dict,
