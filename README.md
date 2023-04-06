@@ -62,6 +62,8 @@ python migrate_neems_to_sql.py -su "sql_username" -sp "sql_password" -sh "localh
 
 The above commands assumes that you have an sql database called "my_sql_database" and a mongo database called "neems".
 
+An important argument to mention is the ```--neem_filters_yaml``` which allow you to filter out specific neems by adding some conditions on the meta data of the neems in a yaml file that you pass through to this argument, an example yaml file is available in the root of this repositroy named ```my_neem_filters.yaml```.
+
 For all usages of the command line see the command line arguments documentation below:
 
 ```
