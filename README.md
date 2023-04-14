@@ -121,3 +121,40 @@ optional arguments:
   --neem_filters_yaml NEEM_FILTERS_YAML, -nfy NEEM_FILTERS_YAML
                         YAML file containing the neem filters
 ```
+
+## The SQL Schema
+
+So the schema can be summarized as follows:
+
+- The neems meta data are stored in the "neems" table, and any table that is prefixed with "neem_", they look like this:
+
+![alt text](resources/neems_meta_data.png)
+
+- Each predicate is a table with subject, object, and neem_id columns, and the table name is the predicate name, prefixed with the ontologoy prefix, the subject and object columns are postfixed with '_s' and '_o' respectively:
+
+![alt text](resources/predicate_tables.png)
+
+- The tf data is linked with the triples through a table called "tf_header_soma_hasIntervalBegin", it was constructed by comparing tf_header timestamp with soma_hasIntervalBegin, and soma_hasIntervalEnd predicates:
+
+![alt text](resources/schema_illustration.png)
+
+## Sample Queries For Common Views
+
+The common_queries folder contains some sample queries for common views, for example the following query shows the linked tf and triples:
+
+
+```
+Select hib.o, hie.o, th.stamp, tf.neem_id
+From tf_header_soma_hasIntervalBegin as tf_tr
+INNER JOIN soma_hasIntervalBegin as hib
+ON hib.ID = tf_tr.soma_hasIntervalBegin_ID
+INNER JOIN soma_hasIntervalEnd hie
+ON hie.ID = tf_tr.soma_hasIntervalEnd_ID
+Inner Join tf_header th on tf_tr.tf_header_ID = th.ID
+INNER JOIN tf
+ON tf.ID = tf_tr.tf_header_ID;
+```
+
+![alt text](resources/result_of_tf_and_triples.png)
+
+
