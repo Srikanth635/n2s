@@ -48,10 +48,10 @@ Make sure that you have MonoDB server running:
 sudo systemctl start mongod.service
 ```
 
-The usage is straight forward, if you have your new neems on a MongoDB, and you have the credentials for access to the MongoDB and the MariaDB, then you are good to go. The only file you need to run is "migrate_neems_to_sql.py", for example the following command uses the sql uri and the mongo uri instead of providing username, password, and hostname, arguments, this is for providing more flexibility:
+The usage is straight forward, if you have your new neems on a MongoDB, and you have the credentials for access to the MongoDB and the MariaDB, then you are good to go. The only file you need to run is "migrate_neems_to_sql.py", for example the following command uses the sql database, sql uri and the mongo uri instead of providing username, password, and hostname, arguments, this is for providing more flexibility:
 
 ```
-python migrate_neems_to_sql.py --sql_uri "mysql+pymysql://username:password@localhost/my_sql_database?charset=utf8mb4" --mongo_uri "mongodb://username:password@localhost:27017/neems"
+python migrate_neems_to_sql.py -sd my_sql_database --sql_uri "mysql+pymysql://username:password@localhost/my_sql_database?charset=utf8mb4" --mongo_uri "mongodb://username:password@localhost:27017/neems"
 ```
 
 Another way is using the specific arguments:
