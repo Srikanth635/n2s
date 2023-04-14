@@ -48,7 +48,7 @@ Make sure that you have MonoDB server running:
 sudo systemctl start mongod.service
 ```
 
-The usage is straight forward, if you have your new neems on a MongoDB, and you have the credentials for access to the MongoDB and the MariaDB, then you are good to go. The only file you need to run is "migrate_neems_to_sql.py", for example the following command uses the sql database, sql uri and the mongo uri instead of providing username, password, and hostname, arguments, this is for providing more flexibility:
+The usage is straight forward, if you have your new neems on a MongoDB, and you have the credentials for access to the MongoDB and the MariaDB, then you are good to go. The only file you need to run is "migrate_neems_to_sql.py", for example the following command uses the sql database (always required), sql uri and the mongo uri instead of providing username, password, and hostname, arguments, this is for providing more flexibility:
 
 ```
 python migrate_neems_to_sql.py -sd my_sql_database --sql_uri "mysql+pymysql://username:password@localhost/my_sql_database?charset=utf8mb4" --mongo_uri "mongodb://username:password@localhost:27017/neems"
@@ -63,6 +63,10 @@ python migrate_neems_to_sql.py -su "sql_username" -sp "sql_password" -sh "localh
 The above commands assumes that you have an sql database called "my_sql_database" and a mongo database called "neems".
 
 An important argument to mention is the ```--neem_filters_yaml``` which allow you to filter out specific neems by adding some conditions on the meta data of the neems in a yaml file that you pass through to this argument, an example yaml file is available in the root of this repositroy named ```my_neem_filters.yaml```.
+
+If all is good you should see something like this:
+
+![alt text](resources/loading_bar_all_step.png)
 
 For all usages of the command line see the command line arguments documentation below:
 
