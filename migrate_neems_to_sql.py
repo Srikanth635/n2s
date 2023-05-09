@@ -144,6 +144,68 @@ def py2sql(val:object,
     else:
         raise ValueError(f"UNKOWN DATA TYPE {val_type}")
 
+def get_value_from_sql(table_name: str, engine:Engine, col_name: Optional[str]='ID', col_value_pairs: Optional[dict]=None) -> list:
+        """Retrieve a list of values from a table column .
+
+        Args:
+            table_name (str): [The name of the table to retrieve the values from.]
+            engine (Engine): [The sqlalchemy engine to use to connect to the database.]
+            col_name (str, optional): [The name of the column to retrieve the values from.]. Defaults to 'ID'.
+            col_value_pairs (dict, optional): [each pair is a column name and a value to search for in that column.]. Defaults to None.
+
+        Returns:
+            [list]: [list of values that match the search criteria.]
+            
+        """
+        if col_value_pairs is None:
+            sql_cmd = f"SELECT {col_name} FROM {table_name};"
+        else:
+            sql_cmd = f"SELECT {col_name} FROM {table_name} WHERE "
+            for i, (k, v) in enumerate(col_value_pairs.items()):
+                sql_cmd += f"{k} = '{v}'"
+                if i != len(col_value_pairs)-1:
+                    sql_cmd += ' AND '
+                else:
+                    sql_cmd += ';'
+        with engine.connect() as conn:
+            try:
+                result = conn.execute(text(sql_cmd))
+                result = result.fetchall()
+                result = [x[0] for x in result]
+            except:
+                result = []
+        return result
+
+def get_sql_meta_data(engine:Engine) -> Tuple[dict, dict, dict]:
+    """Get the names of the tables and columns from the database
+
+    Args:
+        engine (Engine): [The database engine]
+
+    Returns:
+        [dict] : [The names of the tables and the columns in each table that are currently in the database]
+        [dict] : [Column data types]
+        [dict] : [Column data byte sizes]
+    """
+    stmt =text("SELECT TABLE_NAME, COLUMN_NAME, COLUMN_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = N'test'")
+    meta_data = {}
+    data_types = {}
+    data_bytes = {}
+    with engine.connect() as conn:
+        result = conn.execute(stmt)
+        for row in result:
+            if row[0] not in meta_data:
+                    meta_data[row[0]] = []
+            if row[1] != 'ID':
+                meta_data[row[0]].append(row[1])
+                data_types[row[0]] = {row[1]: row[2]}
+                data_bytes[row[0]] = {row[1]: sql_type_to_byte_size(row[2])}
+        if result.rowcount == 0:
+            LOGGER.debug("No data found")
+        else:
+            LOGGER.debug(f"{result.rowcount} row(s) found")
+        return meta_data, data_types, data_bytes
+
 class SQLCreator():
     def __init__(self, engine:Engine,
                   value_mapping_func: Optional[Callable[[object, Optional[str]], object]]=None,
@@ -185,7 +247,7 @@ class SQLCreator():
         self.tosql_func = tosql_func
         self.data_bytes = {}
         self.data_types = {}
-        self.sql_meta_data, self.original_data_types, self.original_data_bytes = self._get_sql_meta_data()
+        self.sql_meta_data, self.original_data_types, self.original_data_bytes = get_sql_meta_data(self.engine)
         self.allow_increasing_size = allow_increasing_size
         self.allow_text_indexing = allow_text_indexing
 
@@ -194,7 +256,7 @@ class SQLCreator():
         """
         self.sql_table_creation_cmds = OrderedSet()
         self.data_to_insert = {}
-        self.sql_meta_data, self.original_data_types, self.original_data_bytes = self._get_sql_meta_data()
+        self.sql_meta_data, self.original_data_types, self.original_data_bytes = get_sql_meta_data(self.engine)
     
     def merge_with(self, sql_creator: 'SQLCreator') -> None:
         """Merge another SQL creator .
@@ -428,7 +490,7 @@ class SQLCreator():
             latest_id = 0
             if parent_list:
                 if table_name in self.sql_meta_data:
-                    res = self.get_value_from_sql(table_name, col_value_pairs=obj)
+                    res = get_value_from_sql(table_name, self.engine, col_value_pairs=obj)
                     if len(res) != 0:
                         ID = res[-1]
                         return obj, type(obj), np.iterable(obj) and type(obj) != str, ID
@@ -676,36 +738,6 @@ class SQLCreator():
                 return
         self.sql_table_creation_cmds.add(f"CREATE {full_text}INDEX IF NOT EXISTS {idx_name} ON {table_name} ({column_name});")
     
-    def get_value_from_sql(self, table_name: str, col_name: Optional[str]='ID', col_value_pairs: Optional[dict]=None) -> list:
-        """Retrieve a list of values from a table column .
-
-        Args:
-            table_name (str): [The name of the table to retrieve the values from.]
-            col_name (str, optional): [The name of the column to retrieve the values from.]. Defaults to 'ID'.
-            col_value_pairs (dict, optional): [each pair is a column name and a value to search for in that column.]. Defaults to None.
-
-        Returns:
-            [list]: [list of values that match the search criteria.]
-            
-        """
-        if col_value_pairs is None:
-            sql_cmd = f"SELECT {col_name} FROM {table_name};"
-        else:
-            sql_cmd = f"SELECT {col_name} FROM {table_name} WHERE "
-            for i, (k, v) in enumerate(col_value_pairs.items()):
-                sql_cmd += f"{k} = '{v}'"
-                if i != len(col_value_pairs)-1:
-                    sql_cmd += ' AND '
-                else:
-                    sql_cmd += ';'
-        with self.engine.connect() as conn:
-            try:
-                result = conn.execute(text(sql_cmd))
-                result = result.fetchall()
-                result = [x[0] for x in result]
-            except:
-                result = []
-        return result
     
     def get_max_id_from_sql(self, table_name:str, col_name: Optional[str]='ID') -> int:
         """Retrieve the maximum id from a table .
@@ -835,33 +867,6 @@ class SQLCreator():
                 
                 sql_insert_commands.append(f"INSERT INTO {key} {cols_str} VALUES {all_rows_str};")
         return sql_insert_commands
-    
-    def _get_sql_meta_data(self) -> Tuple[dict, dict, dict]:
-        """Get the names of the tables and columns from the database
-
-        Returns:
-            [dict] : [The names of the tables and the columns in each table that are currently in the database]
-            [dict] : [Column data types]
-            [dict] : [Column data byte sizes]
-        """
-        stmt =text("SELECT TABLE_NAME, COLUMN_NAME, COLUMN_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = N'test'")
-        meta_data = {}
-        data_types = {}
-        data_bytes = {}
-        with self.engine.connect() as conn:
-            result = conn.execute(stmt)
-            for row in result:
-                if row[0] not in meta_data:
-                        meta_data[row[0]] = []
-                if row[1] != 'ID':
-                    meta_data[row[0]].append(row[1])
-                    data_types[row[0]] = {row[1]: row[2]}
-                    data_bytes[row[0]] = {row[1]: sql_type_to_byte_size(row[2])}
-            if result.rowcount == 0:
-                LOGGER.debug("No data found")
-            else:
-                LOGGER.debug(f"{result.rowcount} row(s) found")
-            return meta_data, data_types, data_bytes
 
     def upload_data_to_sql(self, drop_tables: Optional[bool] = True) -> Tuple[int, float]:
         """Upload the data to the database, this will create the tables and insert the data.
@@ -971,7 +976,7 @@ def neem_collection_to_sql(name: str, collection: List[Dict], sql_creator: SQLCr
             LOGGER.debug(f"NEEM_ID = {neem_id}")
     
     if name == "neems":
-        ids = sql_creator.get_value_from_sql(name, col_name='_id')
+        ids = get_value_from_sql(name, sql_creator.engine, col_name='_id')
         collection = [doc for doc in collection if doc['_id'] not in ids]
         if len(collection) == 0:
             LOGGER.info("NO NEW NEEMS FOUND")
