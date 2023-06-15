@@ -1015,9 +1015,10 @@ def neem_collection_to_sql(name: str, collection: List[Dict], sql_creator: SQLCr
                         collection.remove(doc)
                         break
             for doc in collection:
-                LOGGER.info(f"FOUND NEW NEEM: {doc['_id']}, Visibility: {doc['visibility']}, Created_by: {doc['created_by']}")
+                LOGGER.info(f"FOUND NEW NEEM: {doc['_id']}")
             if len(collection) == 0:
-                LOGGER.info("NO NEEMS FOUND THAT CONFORM TO THE GIVEN FILTERS")
+                LOGGER.error("NO NEEMS FOUND THAT CONFORM TO THE GIVEN FILTERS")
+                raise
                 
     meta_sql_creator = SQLCreator(engine=sql_creator.engine)
 
@@ -1388,6 +1389,9 @@ if __name__ == "__main__":
                         sql_creator=sql_creator,
                         neem_filters=neem_filters)
     meta_lod = list(reversed(meta_lod))
+    if len(meta_lod) == 0:
+        LOGGER.error("NO NEEMS FOUND (Probably no meta data collection OR no neems with the given filters)")
+        raise
     batch_sz = batch_size
     first_n_batches = num_batches
     start_from = start_batch

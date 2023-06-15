@@ -1,5 +1,6 @@
 SELECT taskt.o as task, task_ib.o, task_ie.o, subtaskt.o as subtask,
-       subtask_ib.o, subtask_ie.o, subtask_hp.dul_Object_o, parameter_type2.o as subtask_param, hc.neem_id
+       subtask_ib.o, subtask_ie.o, subtask_hp.dul_Object_o, parameter_type2.o as subtask_param,
+       subtask_es.soma_ExecutionStateRegion_o as subtask_es, task_es.soma_ExecutionStateRegion_o as task_es, hc.neem_id
 From dul_hasConstituent as hc
 INNER JOIN dul_executesTask as task
 on hc.dul_Entity_s = task.dul_Action_s and hc.neem_id = task.neem_id
@@ -25,4 +26,6 @@ Inner JOIN soma_hasIntervalEnd task_ie on task_ti.dul_TimeInterval_o = task_ie.d
 Inner JOIN soma_hasIntervalEnd subtask_ie on subtask_ti.dul_TimeInterval_o = subtask_ie.dul_TimeInterval_s and subtask_ti.neem_id = subtask_ie.neem_id
 Left JOIN dul_hasParticipant as subtask_hp
 ON subtask_hp.dul_Event_s = subtask.dul_Action_s and subtask_hp.neem_id = subtask.neem_id
+Left JOIN soma_hasExecutionState task_es on task_es.dul_Action_s = hc.dul_Entity_s and task_es.neem_id = hc.neem_id
+Left JOIN soma_hasExecutionState subtask_es on subtask_es.dul_Action_s = hc.dul_Entity_o and subtask_es.neem_id = hc.neem_id
 Order by subtask_ib.o;
