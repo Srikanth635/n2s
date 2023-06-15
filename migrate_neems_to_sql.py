@@ -1002,7 +1002,7 @@ def neem_collection_to_sql(name: str, collection: List[Dict], sql_creator: SQLCr
                             return False
                     return True
                 else:
-                    return doc_val == filter_val
+                    return mon2py(doc_val) == filter_val
                 
             coll_cp = deepcopy(collection)
             for doc in coll_cp:
