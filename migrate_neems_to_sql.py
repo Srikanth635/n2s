@@ -1048,7 +1048,8 @@ def json_to_sql(top_table_name:str,
                 filter_doc: Optional[Callable[[dict], Tuple[Optional[str], dict, str]]]=None,
                 drop_tables: Optional[bool]=True,
                 value_mapping_func: Optional[Callable[[object, Optional[str]], object]]=None,
-                pbar: Optional[tqdm]=None) -> None:
+                pbar: Optional[tqdm]=None,
+                count_mode: Optional[bool]=False) -> Optional[int]:
     """Convert a json file to sql commands.
 
     Args:
@@ -1076,17 +1077,21 @@ def json_to_sql(top_table_name:str,
                     sql_creator.name_type[iri] = name
                 if np.iterable(name) and not isinstance(name, str):
                     for n in name:
-                        func(n, doc)
+                        if not count_mode:
+                            func(n, doc)
                         if pbar is not None:
                             pbar.update(1)
                         n_doc += 1
                     continue
-            func(name, doc)
+            if not count_mode:
+                func(name, doc)
             if pbar is not None:
                 pbar.update(1)
             n_doc += 1
-        if f_i == 0:
+        if f_i == 0 and not count_mode:
             sql_creator.filter_null_tables()
+    if count_mode:
+        return n_doc
     sql_creator._reference_to_existing_table()
     LOGGER.debug(f"number_of_json_documents = {n_doc}")
     sql_creator.upload_data_to_sql(drop_tables=drop_tables)

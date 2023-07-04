@@ -284,7 +284,7 @@ class TriplesToSQL:
         self.reset_graph()
         py2xsd = {int: XSD.integer, float: XSD.float, str: XSD.string, bool: XSD.boolean, list: self.ns['soma'].array_double,
                   datetime: XSD.dateTime}
-        for docs in collection:
+        for docs in collection.find({}):
             assert isinstance(docs, dict)
             if 'o' not in docs and 'v' in docs:
                 v = [docs['s'], docs['p'], docs['v']]
@@ -461,17 +461,18 @@ class TriplesToSQL:
 
 if __name__ == "__main__":
     from migrate_neems_to_sql import json_to_sql, dict_to_sql, SQLCreator
+    from tqdm import tqdm
 
     # Create TriplesToSQL object
     t2sql = TriplesToSQL()
 
     # Create a graph from the sql database or from the json file
     create_graph_from_sql = False
-    create_graph_from_json = True
-    create_graph_from_mongo = False
+    create_graph_from_json = False
+    create_graph_from_mongo = True
 
     # Save the graph to a json file
-    save_graph_to_json = False
+    save_graph_to_json = True
 
     # Create a sql database from the graph dictionary or from the json file
     create_sql_from_graph_dict = False
@@ -515,4 +516,6 @@ if __name__ == "__main__":
         # Create a sql database from the json file
         triples_data = json.load(open('test.json'))
         name = "restructred_triples"
-        json_to_sql(name, triples_data, engine, filter_doc=t2sql.triples_json_filter_func, value_mapping_func=lambda x,name: x)
+        total = json_to_sql(name, triples_data, engine, filter_doc=t2sql.triples_json_filter_func, value_mapping_func=lambda x,name: x, count_mode=True)
+        pbar = tqdm(total=total, colour="#FFA500")
+        json_to_sql(name, triples_data, engine, filter_doc=t2sql.triples_json_filter_func, value_mapping_func=lambda x,name: x, pbar=pbar)
