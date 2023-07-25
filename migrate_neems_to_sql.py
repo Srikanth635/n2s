@@ -20,8 +20,6 @@ import yaml
 import sys
 
 
-
-
 class CustomFormatter(logging.Formatter):
 
     grey = "\x1b[38;20m"
@@ -55,8 +53,6 @@ ch.setLevel(logging.INFO)
 
 ch.setFormatter(CustomFormatter())
 LOGGER.addHandler(ch)
-
-sql_str_types = ['CHAR', 'VARCHAR', 'TEXT', 'MEDIUMTEXT', 'LONGTEXT']
 
 def sql_type_to_byte_size(sql_type: str) -> int:
     """Get the byte size of the sql type
