@@ -173,43 +173,63 @@ if __name__ == "__main__":
         raise
     neem_ids = [doc['_id'] for doc in meta_lod]
     LOGGER.debug(f"NEEM IDS: {neem_ids}")
-    first_neem_id = neem_ids[0]
-    triples = db.get_collection(f"{first_neem_id}_triples")
-    cursor = triples.aggregate([
-        { "$match": {"$or": [ {"p": "http://www.ontologydesignpatterns.org/ont/dul/DUL.owl#executesTask"}, {'p':'http://www.w3.org/1999/02/22-rdf-syntax-ns#type', 'o':'http://www.ease-crc.org/ont/SOMA.owl#Gripping'}]} },
-        {
-            "$lookup":
+
+    total_time = 0
+    all_docs = []
+    get_collection_time = []
+    single_query_time = []
+    append_time = []
+    total_per_neem_time = []
+    for neem_id in neem_ids:
+        start = time()
+        triples = db.get_collection(f"{neem_id}_triples")
+        get_collection_time.append(time() - start)
+        start = time()
+        cursor = triples.aggregate([
+            { "$match": {"$or": [ {"p": "http://www.ontologydesignpatterns.org/ont/dul/DUL.owl#executesTask"}, {'p':'http://www.w3.org/1999/02/22-rdf-syntax-ns#type', 'o':'http://www.ease-crc.org/ont/SOMA.owl#Gripping'}]} },
             {
-                "from": f"{neem_ids[1]}_triples",
-                "localField": "p",
-                "foreignField": "p",
-                "as": "address"
-            }
-        },
-        {
-            "$unwind": "$address"
-        },
-        {
-            "$project": {
-                "address.p*": 0,
-                "address._id": 0,
-                "address.graph": 0,
-                "address.scope": 0,
-                "address.s": 0,
-                "address.p": 0,
-                "p*": 0,
-                "_id": 0,
-                "graph": 0,
-                "scope": 0,
-                "s": 0,
-                "p": 0
-            }
-        },
-        { "$match": {'p':'http://www.w3.org/1999/02/22-rdf-syntax-ns#type', 'o':'http://www.ease-crc.org/ont/SOMA.owl#Gripping'} }
-    ])
-    for doc in cursor:
-        pprint(doc)
-        break
+                "$lookup":
+                {
+                    "from": f"{neem_id}_triples",
+                    "localField": "o",
+                    "foreignField": "s",
+                    "as": f"{neem_id}"
+                }
+            },
+            {
+                "$unwind": f"${neem_id}"
+            },
+            {
+                "$project": {
+                    f"{neem_id}.p*": 0,
+                    f"{neem_id}._id": 0,
+                    f"{neem_id}.graph": 0,
+                    f"{neem_id}.scope": 0,
+                    f"{neem_id}.o*": 0,
+                    "p*": 0,
+                    "o*": 0,
+                    "_id": 0,
+                    "graph": 0,
+                    "scope": 0
+                }
+            },
+            { "$match": {f'{neem_id}.p':'http://www.w3.org/1999/02/22-rdf-syntax-ns#type', f'{neem_id}.o':'http://www.ease-crc.org/ont/SOMA.owl#Gripping'} }
+        ])
+        single_query_time.append(time() - start)
+        start = time()
+        all_docs.extend([doc for doc in cursor])
+        append_time.append(time() - start)
+        total_per_neem_time.append(get_collection_time[-1] + single_query_time[-1] + append_time[-1])
+
+    LOGGER.info(f"Total time: {sum(total_per_neem_time)}")
+    LOGGER.info(f"Total get collection time: {sum(get_collection_time)}")
+    LOGGER.info(f"Total single query time: {sum(single_query_time)}")
+    LOGGER.info(f"Total append time: {sum(append_time)}")
+    LOGGER.info(f"Avg per neem time: {sum(total_per_neem_time)/len(neem_ids)}")
+    LOGGER.info(f"Avg get collection time: {sum(get_collection_time)/len(neem_ids)}")
+    LOGGER.info(f"Avg single query time: {sum(single_query_time)/len(neem_ids)}")
+    LOGGER.info(f"Avg append time: {sum(append_time)/len(neem_ids)}")
+    LOGGER.info(f"Total number of documents: {len(all_docs)}")
 
 
 

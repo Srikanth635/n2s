@@ -1334,7 +1334,10 @@ if __name__ == "__main__":
     start_batch = args.start_batch
 
     log_level_dict = {'DEBUG': logging.DEBUG, 'INFO': logging.INFO, 'WARNING': logging.WARNING, 'ERROR': logging.ERROR, 'CRITICAL': logging.CRITICAL}
-
+    
+    # set log level
+    LOGGER.setLevel(log_level_dict[log_level])
+    ch.setLevel(log_level_dict[log_level])
 
     if neem_filters_yaml is not None:
         with open(neem_filters_yaml, "r") as stream:
