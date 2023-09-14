@@ -284,7 +284,11 @@ class TriplesToSQL:
         self.reset_graph()
         py2xsd = {int: XSD.integer, float: XSD.float, str: XSD.string, bool: XSD.boolean, list: self.ns['soma'].array_double,
                   datetime: XSD.dateTime}
-        for docs in collection.find({}):
+        if not isinstance(collection, list):
+            cursor = collection.find({})
+        else:
+            cursor = collection
+        for docs in cursor:
             assert isinstance(docs, dict)
             if 'o' not in docs and 'v' in docs:
                 v = [docs['s'], docs['p'], docs['v']]
