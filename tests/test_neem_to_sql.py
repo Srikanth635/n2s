@@ -62,3 +62,13 @@ class TestNeemToSql(NeemToSqlTestCase):
         self.mongo_client = connect_to_mongo_and_get_client("mongodb://localhost:27017/neems")
         get_mongo_neems_and_put_into_sql_database(self.engine, self.mongo_client, 'test', drop_tables=True, num_batches=1,
                                                   batch_size=2, start_batch=1)
+
+    def test_all_batches(self):
+        neem_filters = {'visibility': True}
+        get_mongo_neems_and_put_into_sql_database(self.engine, self.mongo_client, 'test',
+                                                  drop_tables=True,
+                                                  neem_filters=neem_filters,
+                                                  skip_bad_triples=True,
+                                                  allow_increasing_sz=True,
+                                                  start_batch=4,
+                                                  )

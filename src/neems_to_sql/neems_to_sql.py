@@ -277,7 +277,7 @@ class SQLCreator:
         if column_name not in self.data_to_insert[key].keys():
             null, unique = True, False
             if data_type is not None:
-                if id:
+                if _id:
                     null = False
                     if column_name == '_id' and key == 'neems':
                         unique = True
@@ -686,8 +686,7 @@ class SQLCreator:
             parent_col_name (str, optional): [the name of the column to link to in the parent table]. Defaults to 'ID'.
         """
         col_string = (f"ALTER TABLE {table_name} ADD FOREIGN KEY IF NOT EXISTS ({col_name})"
-                      f" REFERENCES {parent_table_name}({parent_col_name})"
-                      f"ON DELETE CASCADE;")
+                      f" REFERENCES {parent_table_name}({parent_col_name})")
         self.sql_table_creation_cmds.add(col_string)
 
     def add_column(self, table_name: str, col_name: str, col_type: str,
@@ -1375,10 +1374,9 @@ def get_mongo_neems_and_put_into_sql_database(engine: Engine, client: MongoClien
         LOGGER.error("NO NEEMS FOUND (Probably no meta data collection OR no neems with the given filters)")
         raise ValueError("NO NEEMS FOUND (Probably no meta data collection OR no neems with the given filters)")
     batch_sz = batch_size
-    first_n_batches = num_batches
     start_from = start_batch
     meta_lod_batches = [meta_lod[i:i + batch_sz] for i in range(0, len(meta_lod), batch_sz)]
-    first_n_batches = first_n_batches if first_n_batches > 0 else len(meta_lod_batches) - start_from
+    first_n_batches = num_batches if num_batches > 0 else len(meta_lod_batches) - start_from
     coll_names = ['tf', 'triples', 'annotations', 'inferred']
     verification_time = 0
     total_time = 0
@@ -1387,8 +1385,8 @@ def get_mongo_neems_and_put_into_sql_database(engine: Engine, client: MongoClien
     # Verifying data
     for batch_idx, batch in enumerate(meta_lod_batches[start_from:start_from + first_n_batches]):
 
-        verification = tqdm(total=len(batch) * 4,
-                            desc=f"Verifying Data (batch {batch_idx + start_from + 1}/{n_batches})", colour='#FFA500')
+        verification = tqdm(total=len(batch) * len(coll_names),
+                            desc=f"Verifying Data (batch {batch_idx + start_from + 1}/{len(meta_lod_batches)})", colour='#FFA500')
 
         for d_i, doc in enumerate(batch):
 
@@ -1422,7 +1420,8 @@ def get_mongo_neems_and_put_into_sql_database(engine: Engine, client: MongoClien
         all_docs = 0
         collections = {}
         meta_data = tqdm(total=len(batch) * len(coll_names),
-                         desc=f"Collecting & Restructuring Data (batch {batch_idx + start_from + 1}/{n_batches})",
+                         desc=f"Collecting & Restructuring Data (batch {batch_idx + start_from + 1}/"
+                              f"{len(meta_lod_batches)})",
                          colour='#FFA500')
         for d_i, doc in enumerate(batch):
 
