@@ -1,30 +1,30 @@
-import os
-from sqlalchemy import create_engine, text
-from rdflib import Graph, URIRef, RDF, RDFS, OWL, Literal, Namespace, XSD, term
-from rdflib.graph import _SubjectType, _ObjectType, _PredicateType
 import json
-from sqlalchemy import create_engine, Engine
+import logging
+import os
 import re
 from copy import deepcopy
-from pymongo import MongoClient, cursor
-from pymongo.collection import Collection
 from datetime import datetime
-from bson.decimal128 import Decimal128
 from typing import Optional, Tuple, Union, List, Dict
-import logging
 
+from bson.decimal128 import Decimal128
+from pymongo import MongoClient
+from pymongo.collection import Collection
+from rdflib import Graph, URIRef, RDF, RDFS, OWL, Literal, Namespace, XSD
+from rdflib.graph import _PredicateType
+from sqlalchemy import create_engine, Engine
+from sqlalchemy import text
 
 xsd2py = {XSD.integer: int, XSD.float: float, XSD.double: float, XSD.boolean: bool, XSD.dateTime: datetime,
-                XSD.positiveInteger: int, XSD.date: datetime, XSD.time: datetime, XSD.string: str,
-                XSD.anyURI: str, XSD.decimal: Decimal128, XSD.nonNegativeInteger: int, XSD.long: int}
+          XSD.positiveInteger: int, XSD.date: datetime, XSD.time: datetime, XSD.string: str,
+          XSD.anyURI: str, XSD.decimal: Decimal128, XSD.nonNegativeInteger: int, XSD.long: int}
 py2xsd = {int: XSD.integer, float: XSD.double, bool: XSD.boolean, datetime: XSD.dateTime, str: XSD.string,
-                Decimal128: XSD.decimal}
+          Decimal128: XSD.decimal}
 xsd2sql = {XSD.integer: 'INT', XSD.float: 'DOUBLE', XSD.double: 'DOUBLE', XSD.boolean: 'BOOL',
-                XSD.positiveInteger: 'INT UNSIGNED', XSD.dateTime: 'DATETIME', XSD.date: 'DATE', XSD.time: 'TIME',
-                XSD.string: 'TEXT', XSD.anyURI: 'VARCHAR(255)'}
+           XSD.positiveInteger: 'INT UNSIGNED', XSD.dateTime: 'DATETIME', XSD.date: 'DATE', XSD.time: 'TIME',
+           XSD.string: 'TEXT', XSD.anyURI: 'VARCHAR(255)'}
+
 
 class CustomFormatter(logging.Formatter):
-
     grey = "\x1b[38;20m"
     yellow = "\x1b[33;20m"
     red = "\x1b[31;20m"
@@ -58,20 +58,21 @@ def get_byte_size(value: object) -> Optional[int]:
     Returns:
         Optional[int]: [The byte size of the value.]
     """
-    if type(value) == str:
+    if isinstance(value, str):
         return len(value.encode('utf-8'))
     elif isinstance(value, (int, bool)):
         return (value.bit_length() + 7) // 8
-    elif type(value) == float:
+    elif isinstance(value, float):
         return 8
-    elif type(value) == datetime:
+    elif isinstance(value, datetime):
         return 8
-    elif value == None:
+    elif value is None:
         return None
     else:
         raise ValueError(f'Unknown type {type(value)}')
 
-def get_sql_type_from_pyval(val: object, signed: Optional[bool]=True) -> Tuple[str, int]:
+
+def get_sql_type_from_pyval(val: object, signed: Optional[bool] = True) -> Tuple[str, int]:
     """Returns the sql type and the byte size of the given value.
     
     Args:
@@ -88,38 +89,38 @@ def get_sql_type_from_pyval(val: object, signed: Optional[bool]=True) -> Tuple[s
     byte_size = get_byte_size(val)
     if pytype == int:
         if byte_size <= 4:
-            sqltype =  'INT' if signed else 'INT UNSIGNED'
+            sqltype = 'INT' if signed else 'INT UNSIGNED'
             byte_size = 4
         elif byte_size <= 8:
             sqltype = 'BIGINT' if signed else 'BIGINT UNSIGNED'
             byte_size = 8
         else:
             sqltype = 'TEXT'
-            byte_size = 2**16-1
+            byte_size = 2 ** 16 - 1
     elif pytype == str:
         if byte_size <= 255:
             sqltype = 'VARCHAR(255)'
             byte_size = 255
-        elif byte_size <= 2**16-1:
+        elif byte_size <= 2 ** 16 - 1:
             sqltype = 'TEXT'
-            byte_size = 2**16-1
-        elif byte_size <= 2**24-1:
+            byte_size = 2 ** 16 - 1
+        elif byte_size <= 2 ** 24 - 1:
             sqltype = 'MEDIUMTEXT'
-            byte_size = 2**24-1
-        else: # <= 2**32-1
+            byte_size = 2 ** 24 - 1
+        else:  # <= 2**32-1
             sqltype = 'LONGTEXT'
-            byte_size = 2**32-1
+            byte_size = 2 ** 32 - 1
     elif pytype in py2xsd:
         sqltype = xsd2sql[py2xsd[pytype]]
-    elif val == None:
-        return 'TEXT', 2**16-1
+    elif val is None:
+        return 'TEXT', 2 ** 16 - 1
     else:
         raise ValueError('Unknown type')
     return sqltype, byte_size
 
 
 class TriplesToSQL:
-    def __init__(self, logger: Optional[logging.Logger]=None) -> None:
+    def __init__(self, logger: Optional[logging.Logger] = None) -> None:
         """Initializes the TriplesToSQL class.
         This class is used to deal with triples data in different formats, and convert it to and from SQL.
 
@@ -127,7 +128,7 @@ class TriplesToSQL:
             logger (Optional[logging.Logger], optional): [The logger to use. Defaults to None.]
         
         Examples:
-            >>> from triples_to_sql import TriplesToSQL
+            >>> from neems_to_sql.triples_to_sql import TriplesToSQL
             >>> t2s = TriplesToSQL()
             >>> import sqlalchemy
             >>> engine = create_engine('mysql+pymysql://username:password@localhost/test?charset=utf8mb4')
@@ -136,7 +137,7 @@ class TriplesToSQL:
             # If you want the graph as a dictionary, use t2s.graph_to_dict()
             >>> triples_dict = t2s.graph_to_dict() # the outermost keys are the predicates, and the inner keys are subjects and objects,
              and the values are lists, a list for subject and a list for object for each predicate.
-        """   
+        """
         self.data_types = {'types': [], 'values': []}
         self.all_property_types = {}
         self.predicate_dict = {}
@@ -157,23 +158,23 @@ class TriplesToSQL:
         iai_kitchen_objects = Namespace("http://knowrob.org/kb/iai-kitchen-objects.owl#")
         dcmi = Namespace("http://purl.org/dc/elements/1.1#")
         known_ns = [OWL, RDF, RDFS, XSD, soma, dul, iolite, urdf, srdl2_cap, kitchen, pr2,
-                     iai_kitchen_knowledge, knowrob, iai_kitchen_objects, srdl2_comp, dcmi]
+                    iai_kitchen_knowledge, knowrob, iai_kitchen_objects, srdl2_comp, dcmi]
         known_ns_names = ['owl', 'rdf', 'rdfs', 'xsd', 'soma', 'dul', 'iolite', 'urdf', 'srdl2_cap', 'kitchen', 'pr2',
-                           'iai_kitchen_knowledge', 'knowrob', 'iai_kitchen_objects', 'srdl2_comp', 'dcmi']
+                          'iai_kitchen_knowledge', 'knowrob', 'iai_kitchen_objects', 'srdl2_comp', 'dcmi']
         self.ns = {knsname: kns for knsname, kns in zip(known_ns_names, known_ns)}
         self.ns_str = {knsname: str(kns) for knsname, kns in zip(known_ns_names, known_ns)}
         self.reset_graph()
         self.property_sql_type = {}
         self.logger = logger
-    
+
     def reset_graph(self) -> None:
         """reset the graph by creating a new one and binding the namespaces.
         """
-        self.g = Graph(bind_namespaces="rdflib")  
+        self.g = Graph(bind_namespaces="rdflib")
         for knsname, kns in self.ns.items():
             self.g.bind(knsname, kns)
-    
-    def get_sql_type(self, val: object, property_name: Optional[str]=None)->Tuple[str, int]:
+
+    def get_sql_type(self, val: object, property_name: Optional[str] = None) -> Tuple[str, int]:
         """Get the SQL type of a value, if this value is an output of a triple property, then the property name should be provided,
         to get the correct SQL type.
         
@@ -219,7 +220,7 @@ class TriplesToSQL:
                     o = xsd2py[value](o.toPython())
                 o = Literal(o, datatype=value, normalize=True)
                 v = o.value
-                key = p_n3+'.o'
+                key = p_n3 + '.o'
                 if key not in self.property_sql_type:
                     self.property_sql_type[key] = {}
                 if type(v) in [int, str]:
@@ -238,7 +239,8 @@ class TriplesToSQL:
             return v
         return o
 
-    def sql_to_graph(self, sqlalchemy_engine:Engine, triples_query_string: Optional[str]=None, verbose: Optional[bool]=False) -> None:
+    def sql_to_graph(self, sqlalchemy_engine: Engine, triples_query_string: Optional[str] = None,
+                     verbose: Optional[bool] = False) -> None:
         """Convert the SQL triples to a graph.
         
         Args:
@@ -246,23 +248,27 @@ class TriplesToSQL:
             triples_query_string (Optional[str], optional): The SQL query string to get the triples. Defaults to None.
             verbose (Optional[bool], optional): If True, print the graph as a json, and print the namespaces. Defaults to False.
         """
-        triples_query_string = """SELECT s, p, o, neem_id
-        FROM test.triples
-        ORDER BY _id;""" if triples_query_string is None else triples_query_string
+        triples_query_string = \
+            """
+            SELECT s, p, o, neem_id
+            FROM test.triples
+            ORDER BY _id;
+            """ \
+                if triples_query_string is None else triples_query_string
 
         # get a connection
         engine = sqlalchemy_engine
         conn = engine.connect()
         curr = conn.execute(text(triples_query_string))
-        
+
         for v in curr:
             new_v = []
             for i in range(3):
                 if 'http' in v[i] and '#' in v[i]:
                     ns_name = v[i].split('#')[0].split('/')[-1].split('.owl')[0]
-                    ns_iri = v[i].split('#')[0]+'#'
+                    ns_iri = v[i].split('#')[0] + '#'
                     if ns_iri not in self.ns.values():
-                        self.ns[ns_name] = Namespace(v[i].split('#')[0]+'#')         
+                        self.ns[ns_name] = Namespace(v[i].split('#')[0] + '#')
                 new_v.append(URIRef(v[i].strip('<>')) if '#' in v[i] else Literal(v[i].strip('<>')))
             self.g.add(tuple(new_v))
         conn.commit()
@@ -270,8 +276,9 @@ class TriplesToSQL:
         if verbose:
             print(json.dumps(self.ns, indent=4))
             print(len(self.ns))
-    
-    def mongo_triples_to_graph(self, collection: Union[List[Dict],Collection], verbose: Optional[bool]=False, skip: Optional[bool]=False) -> None:
+
+    def mongo_triples_to_graph(self, collection: Union[List[Dict], Collection], verbose: Optional[bool] = False,
+                               skip: Optional[bool] = False) -> None:
         """Convert MongoDB triples to RDF graph .
 
         Args:
@@ -282,7 +289,8 @@ class TriplesToSQL:
             ValueError: [If the triple is missing the object/value key]
         """
         self.reset_graph()
-        py2xsd = {int: XSD.integer, float: XSD.float, str: XSD.string, bool: XSD.boolean, list: self.ns['soma'].array_double,
+        py2xsd = {int: XSD.integer, float: XSD.float, str: XSD.string, bool: XSD.boolean,
+                  list: self.ns['soma'].array_double,
                   datetime: XSD.dateTime}
         if not isinstance(collection, list):
             cursor = collection.find({})
@@ -297,7 +305,10 @@ class TriplesToSQL:
             else:
                 if skip:
                     if self.logger is not None:
-                        self.logger.warning(f"Missing Object Column in triple keys {list(docs.keys())}, doc_id: {docs['_id']}, the row is skipped.")
+                        self.logger.warning(
+                            f"Missing Object Column in triple keys {list(docs.keys())}, doc_id: {docs['_id']},"
+                            f" the row is skipped.")
+                    continue
                 else:
                     raise ValueError(f'Missing Object value in triple {docs}')
             new_v = []
@@ -320,10 +331,10 @@ class TriplesToSQL:
                 # make sure that the ontology is in the graph, if not add it
                 if v_i.startswith('http') and '#' in v_i:
                     ns_name = v_i.split('#')[0].split('/')[-1].split('.owl')[0]
-                    ns_iri = v_i.split('#')[0]+'#'
+                    ns_iri = v_i.split('#')[0] + '#'
                     if ns_iri not in self.ns_str.values():
-                        self.ns[ns_name] = Namespace(v_i.split('#')[0]+'#')
-                        self.ns_str[ns_name] = v_i.split('#')[0]+'#'
+                        self.ns[ns_name] = Namespace(v_i.split('#')[0] + '#')
+                        self.ns_str[ns_name] = v_i.split('#')[0] + '#'
                         self.g.bind(ns_name, self.ns[ns_name])
                 v_i = v_i.strip('<>')
                 # assert that the predicate name is correctly formatted, because it is used as a sql table name
@@ -332,13 +343,14 @@ class TriplesToSQL:
                         assert v_i.startswith('http') and '#' in v_i, 'Property name must be a URI, not {}'.format(v_i)
                     else:
                         assert '/' not in v_i, 'Property name is not formatted correctly {}'.format(v_i)
-                new_v.append(URIRef(v_i.strip('<>')) if '#' in v_i and v_i.startswith('http') else Literal(v_i.strip('<>')))
+                new_v.append(
+                    URIRef(v_i.strip('<>')) if '#' in v_i and v_i.startswith('http') else Literal(v_i.strip('<>')))
             self.g.add(tuple(new_v))
         if verbose:
             print(json.dumps(self.ns, indent=4))
             print(len(self.ns))
 
-    def graph_to_dict(self, dump: Optional[bool]=False, graph: Optional[Graph]=None) -> Dict :
+    def graph_to_dict(self, dump: Optional[bool] = False, graph: Optional[Graph] = None) -> Dict:
         """Convert the graph to a dictionary of predicates and their subjects and objects.
         
         Args:
@@ -353,12 +365,12 @@ class TriplesToSQL:
         for s, p, o in g:
             p_n3 = p.n3(g.namespace_manager) if isinstance(p, URIRef) or isinstance(p, Literal) else p
             if p_n3 not in predicate_dict:
-                predicate_dict[p_n3] = {'s':[], 'o':[]}
+                predicate_dict[p_n3] = {'s': [], 'o': []}
             s_n3 = s.n3(g.namespace_manager).strip('<>') if isinstance(s, URIRef) or isinstance(s, Literal) else str(s)
             if "iai-kitchen.owl" in s_n3:
                 s_n3 = s_n3.replace("iai-kitchen.owl", "IAI-kitchen.owl")
             if '#' in s_n3 and s_n3.startswith('http'):
-                s_n3 =  URIRef(s_n3).n3(g.namespace_manager)
+                s_n3 = URIRef(s_n3).n3(g.namespace_manager)
             s_n3 = s_n3.strip('<>')
             predicate_dict[p_n3]['s'].append(s_n3)
             new_o = self.ont_2_py(o, p)
@@ -415,16 +427,17 @@ class TriplesToSQL:
             if new_p != p:
                 predicate_dict[new_p] = predicate_dict[p]
                 del predicate_dict[p]
-            
+
             keys = list(predicate_dict[new_p].keys())
             k1, k2 = keys[0], keys[1]
-            new_predicate_dict[new_p] = [{k1:predicate_dict[new_p][k1][i], k2:predicate_dict[new_p][k2][i]} for i in range(len(predicate_dict[new_p][k1]))]
+            new_predicate_dict[new_p] = [{k1: predicate_dict[new_p][k1][i], k2: predicate_dict[new_p][k2][i]} for i in
+                                         range(len(predicate_dict[new_p][k1]))]
         self.predicate_dict.update(predicate_dict)
         if dump:
             json.dump(new_predicate_dict, open('predicate_dict.json', 'w'), indent=4)
         return new_predicate_dict
-    
-    def find_link_in_graph_dict(self, value:str, data:Dict) -> Tuple[Optional[int], Optional[object]]:
+
+    def find_link_in_graph_dict(self, value: str, data: Dict) -> Tuple[Optional[int], Optional[object]]:
         """Find the index of the value in the graph dictionary and return the index and the object.
         
         Args:
@@ -436,11 +449,11 @@ class TriplesToSQL:
         """
         try:
             idx = data['rdf_type']['s'].index(value)
-            return idx+1, data['rdf_type']['o'][idx]
+            return idx + 1, data['rdf_type']['o'][idx]
         except:
             return None, None
 
-    def triples_json_filter_func(self, doc:Dict) -> Tuple[Optional[str], Dict, str]:
+    def triples_json_filter_func(self, doc: Dict) -> Tuple[Optional[str], Dict, str]:
         """Filter function for the json file to filter out the triples.
         
         Args:
@@ -456,15 +469,15 @@ class TriplesToSQL:
             for n in name:
                 if 'NamedIndividual' in n:
                     for n2 in name:
-                        if 'NamedIndividual' not in n2\
-                            and 'Description' not in n2\
+                        if 'NamedIndividual' not in n2 \
+                                and 'Description' not in n2 \
                                 and 'List' not in n2:
                             return n2, doc, iri
         return None, doc, iri
 
 
 if __name__ == "__main__":
-    from migrate_neems_to_sql import json_to_sql, dict_to_sql, SQLCreator
+    from src import json_to_sql, dict_to_sql, SQLCreator
     from tqdm import tqdm
 
     # Create TriplesToSQL object
@@ -502,7 +515,7 @@ if __name__ == "__main__":
         id = '5fc8ff968f880006aa208e19'
         triples_collection = db.get_collection(id + '_triples')
         t2sql.mongo_triples_to_graph(triples_collection)
-    
+
     if save_graph_to_json:
         # Create a json file from the graph
         t2sql.g.serialize(format='json-ld', encoding='utf-8', destination="test.json")
@@ -518,8 +531,10 @@ if __name__ == "__main__":
 
     elif create_sql_from_graph_json:
         # Create a sql database from the json file
-        triples_data = json.load(open('test.json'))
+        triples_data = json.load(open('../../test.json'))
         name = "restructred_triples"
-        total = json_to_sql(name, triples_data, engine, filter_doc=t2sql.triples_json_filter_func, value_mapping_func=lambda x,name: x, count_mode=True)
+        total = json_to_sql(name, triples_data, engine, filter_doc=t2sql.triples_json_filter_func,
+                            value_mapping_func=lambda x, name: x, count_mode=True)
         pbar = tqdm(total=total, colour="#FFA500")
-        json_to_sql(name, triples_data, engine, filter_doc=t2sql.triples_json_filter_func, value_mapping_func=lambda x,name: x, pbar=pbar)
+        json_to_sql(name, triples_data, engine, filter_doc=t2sql.triples_json_filter_func,
+                    value_mapping_func=lambda x, name: x, pbar=pbar)

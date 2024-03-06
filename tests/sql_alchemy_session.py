@@ -1,6 +1,7 @@
 import os
 from sqlalchemy import create_engine, Column, Integer, String, MetaData, Table, ForeignKey, insert, select, update, delete, text
 
+
 def get_id_from_sql(table_name:str, col_value_pairs:dict):
         sql_cmd = f"SELECT ID FROM {table_name} WHERE "
         for i, (k, v) in enumerate(col_value_pairs.items()):
@@ -15,6 +16,7 @@ def get_id_from_sql(table_name:str, col_value_pairs:dict):
             result = [x[0] for x in result]
         return result
 
+
 def get_max_id_from_sql(table_name:str, col_name='ID'):
     sql_cmd = f"SELECT MAX({col_name}) FROM {table_name};"
     with engine.connect() as conn:
@@ -22,6 +24,7 @@ def get_max_id_from_sql(table_name:str, col_name='ID'):
         result = result.fetchall()
         result = [x[0] for x in result]
     return result
+
 
 # create tables and upload data to the sql database
 sql_url = os.environ["LOCAL_SQL_URL2"]

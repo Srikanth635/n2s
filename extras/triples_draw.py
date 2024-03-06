@@ -22,14 +22,15 @@ def visualize(g):
 # IP address of the MySQL database server
 Host = "localhost" 
   
-# User name of the database server
+# Username of the database server
 User = "newuser"       
   
 # Password for the database user
 Password = os.environ['MYSQL_USER_PASS']           
   
 # get a connection
-mypool = create_engine('mysql+pymysql://{}:{}@{}/{}?charset=utf8mb4'.format(User, Password, Host, 'test'), pool_pre_ping=True, pool_recycle=300, pool_timeout=500)
+mypool = create_engine('mysql+pymysql://{}:{}@{}/{}?charset=utf8mb4'.format(User, Password, Host, 'test'),
+                       pool_pre_ping=True, pool_recycle=300, pool_timeout=500)
 conn = mypool.connect()
 
 
@@ -51,7 +52,7 @@ g.serialize(destination="triples_1000.ttl",format="turtle")
 g.serialize(destination="triples_1000.json",format="json-ld")
 print(g.serialize(format="json-ld"))
 
-# url = '/home/abassi/Documents/python_projects/neem_to_sql/triples.ttl'
+# url = os.path.join(os.getcwd(), '../triples.ttl')
 
 # result = g.parse(url, format='turtle')
 
