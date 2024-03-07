@@ -37,6 +37,6 @@ if __name__ == "__main__":
                                               skip_bad_triples=args.skip_bad_triples,
                                               neem_filters=neem_filters_from_yaml,
                                               batch_size=args.batch_size,
-                                              number_of_batches=args.num_batches,
+                                              number_of_batches=args.number_of_batches,
                                               start_batch=args.start_batch,
                                               dump_data_stats=args.dump_data_stats)
