@@ -1493,6 +1493,7 @@ def get_mongo_neems_and_put_into_sql_database(engine: Engine, client: MongoClien
         LOGGER.error("NO NEEMS FOUND (Probably no meta data collection OR no neems with the given filters)")
         raise ValueError("NO NEEMS FOUND (Probably no meta data collection OR no neems with the given filters)")
     meta_lod_batches = [meta_lod[i:i + batch_size] for i in range(0, len(meta_lod), batch_size)]
+    number_of_batches = len(meta_lod_batches)
     coll_names = ['tf', 'triples', 'annotations', 'inferred']
     verification_time = 0
     total_time = 0
