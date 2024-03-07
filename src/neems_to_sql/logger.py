@@ -30,8 +30,13 @@ class CustomLogger:
     LOGGER.setLevel(logging.INFO)
 
     # create console handler with a higher log level
-    stream_handler = logging.StreamHandler(open("../../stdout_file.txt", "w"))
+    stream_handler = logging.StreamHandler(open("stdout_file.txt", "w"))
     stream_handler.setLevel(logging.INFO)
 
     stream_handler.setFormatter(CustomFormatter())
     LOGGER.addHandler(stream_handler)
+
+    @classmethod
+    def set_log_level(cls, level):
+        cls.LOGGER.setLevel(level)
+        cls.stream_handler.setLevel(level)

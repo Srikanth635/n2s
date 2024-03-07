@@ -4,10 +4,8 @@ import pickle
 import re
 from copy import deepcopy
 from datetime import datetime
+from math import ceil
 from time import time
-
-from sqlalchemy.exc import SQLAlchemyError
-from typing_extensions import Optional, Callable, Tuple, List, Dict, Union, Any
 
 import numpy as np
 import yaml
@@ -18,13 +16,14 @@ from pymongo import MongoClient
 from pymongo.collection import Collection
 from sqlalchemy import Engine, Connection
 from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
 from tqdm import tqdm
+from typing_extensions import Optional, Callable, Tuple, List, Dict, Union, Any
 
-from .triples_to_sql import TriplesToSQL, get_sql_type_from_pyval
 from .logger import CustomLogger
+from .triples_to_sql import TriplesToSQL, get_sql_type_from_pyval
 
 LOGGER = CustomLogger.LOGGER
-stream_handler = CustomLogger.stream_handler
 log_level_dict = {'DEBUG': logging.DEBUG, 'INFO': logging.INFO, 'WARNING': logging.WARNING, 'ERROR': logging.ERROR,
                   'CRITICAL': logging.CRITICAL}
 
@@ -489,6 +488,8 @@ class SQLCreator:
                     if len(res) != 0:
                         ID = res[-1]
                         return obj, type(obj), np.iterable(obj) and not isinstance(obj, str), ID
+                    else:
+                        latest_id = self.get_max_id_from_sql(table_name)
                 if table_name in self.data_to_insert.keys():
                     if isinstance(self.data_to_insert[table_name], dict):
                         all_keys_exist = all([k in self.data_to_insert[table_name].keys() for k in obj.keys()])
@@ -968,9 +969,164 @@ class SQLCreator:
                 pbar.update(1)
 
 
+def doc_val_same_as_filter_val(document_value: Any, filter_value: Any) -> bool:
+    """
+    Compares the document value to the filter value.
+    Args:
+        document_value: The mongo document value.
+        filter_value: The filter value.
+
+    Returns:
+        A bool value that indicates whether the mongo document values is the same as the filter value.
+    """
+    if isinstance(filter_value, list):
+        if isinstance(document_value, list):
+            return all([val in document_value for val in filter_value])
+        else:
+            return document_value in filter_value
+    elif isinstance(filter_value, dict):
+        if not isinstance(document_value, dict):
+            LOGGER.warning(
+                f"FILTERS: {filter_value} is of type dict but the document value: {document_value}"
+                f" is not of type dict")
+            return False
+        all_true = True
+        for fk, fv in filter_value.items():
+            if fk in document_value:
+                all_true = all_true and doc_val_same_as_filter_val(document_value[fk], fv)
+                if not all_true:
+                    return False
+            else:
+                return False
+        return True
+    else:
+        return mon2py(document_value) == filter_value
+
+
+def filter_neems(collection: List[Dict], neem_filters: Dict) -> List[Dict]:
+    """
+    Remove neems that does not conform to the given filter values.
+    Args:
+        collection: list of neems as a list of dictionaries.
+        neem_filters: key-value pairs that should exist in the neems.
+    Returns:
+        A list of dictionaries representing the filtered collection.
+    """
+    collection_copy = deepcopy(collection)
+    for doc in collection:
+        for k, v in neem_filters.items():
+            if k in doc:
+                if not doc_val_same_as_filter_val(doc[k], v):
+                    collection_copy.remove(doc)
+                    break
+            else:
+                collection_copy.remove(doc)
+                break
+    return collection_copy
+
+
+def get_neems_not_in_sql_database(collection: List[Dict], engine: Engine) -> List[Dict]:
+    """
+    Get the neems that are not yet in the SQL database.
+    Args:
+        collection: List of neems as list of dictionaries.
+        engine: SQLAlchemy engine.
+
+    Returns:
+        The filtered neems after removing neems that already exist in the SQL database.
+
+    """
+    ids = get_value_from_sql("neems", engine, col_name='_id')
+    new_collection = [doc for doc in collection if str(doc['_id']) not in ids]
+    if len(new_collection) == 0:
+        LOGGER.warning("NO NEW NEEMS FOUND")
+    return new_collection
+
+
+def select_collections_inside_the_requested_batches(collection: List[Dict],
+                                                    start_batch: int,
+                                                    batch_size: int,
+                                                    number_of_batches: int):
+    """
+    Select the collections with index within the batch start and end indices.
+    Args:
+        collection: List of dictionaries.
+        start_batch: Index of the start batch.
+        batch_size: Size of each batch.
+        number_of_batches: Number of batches required.
+
+    Returns:
+        The filtered collection after removing collections outside the requested batches.
+    """
+    last_collection_idx = min(start_batch * batch_size + number_of_batches * batch_size, len(collection))
+    return collection[start_batch * batch_size: last_collection_idx]
+
+
+def is_neem_collection_empty(collection_name: str, neem_id: ObjectId, collection: List[Dict]) -> bool:
+    """
+    Checks if the neem collection is empty or not.
+    Args:
+        collection_name: Name of the collection
+        neem_id: id of the neem to which the colleciton belongs.
+        collection: The collection to check.
+
+    Returns:
+        True if the collections is empty, False otherwise.
+    """
+    if len(collection) == 0:
+        LOGGER.debug(f"NO DOCUMENTS FOUND FOR {collection_name}")
+        if neem_id is not None:
+            LOGGER.debug(f"NEEM_ID = {neem_id}")
+        return True
+    else:
+        return False
+
+
+def filter_and_select_neems_in_batches(collection: List[Dict], engine: Engine,
+                                       neem_filters: Optional[dict] = None,
+                                       start_batch: Optional[int] = 0,
+                                       batch_size: Optional[int] = 4,
+                                       number_of_batches: Optional[int] = -1) -> List[Dict]:
+    """Filter neem collections and select only the neems in the requested batches
+
+        Args:
+            collection (list): [The collection of documents]
+            engine (Engine): [The SQLAlchemy engine]
+            neem_filters (dict, optional): [The filters used to select certain neems that conform with conditions in
+             the filters]. Defaults to None.
+            start_batch (int, optional): [The start batch of batches of neems to be moved to sql database].
+             Defaults to 0.
+            batch_size (int, optional): [The size of the batch of neems (i.e. number of neems per batch)].
+             Defaults to 4.
+            number_of_batches (int, optional): [The number of batches to put into sql]. Defaults to -1 which uses all
+             neems.
+        Returns:
+            The filtered collection of neems.
+    """
+    if neem_filters is not None:
+        collection = filter_neems(collection, neem_filters)
+        if len(collection) == 0:
+            LOGGER.warning("NO NEEMS FOUND THAT CONFORM TO THE GIVEN FILTERS")
+            return []
+
+    collection = get_neems_not_in_sql_database(collection, engine)
+
+    for doc in collection:
+        LOGGER.info(f"FOUND NEW NEEM: {doc['_id']}")
+
+    collection = select_collections_inside_the_requested_batches(collection,
+                                                                 start_batch,
+                                                                 batch_size,
+                                                                 number_of_batches)
+    return collection
+
+
 def neem_collection_to_sql(name: str, collection: List[Dict], sql_creator: SQLCreator,
                            neem_id: Optional[ObjectId] = None, pbar: Optional[List[tqdm]] = None,
-                           neem_filters: Optional[dict] = None) -> List[Dict]:
+                           neem_filters: Optional[dict] = None,
+                           start_batch: Optional[int] = 0,
+                           batch_size: Optional[int] = 4,
+                           number_of_batches: Optional[int] = -1) -> List[Dict]:
     """Convert a collection of documents to sql commands.
     
     Args:
@@ -982,59 +1138,17 @@ def neem_collection_to_sql(name: str, collection: List[Dict], sql_creator: SQLCr
         pbar (tqdm, optional): [The progress bar]. Defaults to None.
         neem_filters (dict, optional): [The filters used to select certain neems that conform with conditions in
          the filters]. Defaults to None.
+        start_batch (int, optional): [The start batch of batches of neems to be moved to sql database]. Defaults to 0.
+        batch_size (int, optional): [The size of the batch of neems (i.e. number of neems per batch)]. Defaults to 4.
+        number_of_batches (int, optional): [The number of batches to put into sql]. Defaults to -1 which uses all neems.
     """
 
-    if len(collection) == 0:
-        LOGGER.debug(f"NO DOCUMENTS FOUND FOR {name}")
-        if neem_id is not None:
-            LOGGER.debug(f"NEEM_ID = {neem_id}")
+    if is_neem_collection_empty(name, neem_id, collection):
+        return []
 
     if name == "neems":
-        ids = get_value_from_sql(name, sql_creator.engine, col_name='_id')
-        collection = [doc for doc in collection if doc['_id'] not in ids]
-        if len(collection) == 0:
-            LOGGER.info("NO NEW NEEMS FOUND")
-
-        if neem_filters is not None:
-            def filter_cond(doc_val, filter_val):
-                if isinstance(filter_val, list):
-                    if isinstance(doc_val, list):
-                        return all([val in doc_val for val in filter_val])
-                    else:
-                        return doc_val in filter_val
-                elif isinstance(filter_val, dict):
-                    if not isinstance(doc_val, dict):
-                        LOGGER.warning(
-                            f"FILTERS: {filter_val} is of type dict but the document value: {doc_val}"
-                            f" is not of type dict")
-                        return False
-                    all_true = True
-                    for fk, fv in filter_val.items():
-                        if fk in doc_val:
-                            all_true = all_true and filter_cond(doc_val[fk], fv)
-                            if not all_true:
-                                return False
-                        else:
-                            return False
-                    return True
-                else:
-                    return mon2py(doc_val) == filter_val
-
-            coll_cp = deepcopy(collection)
-            for doc in coll_cp:
-                for k, v in neem_filters.items():
-                    if k in doc:
-                        if not filter_cond(doc[k], v):
-                            collection.remove(doc)
-                            break
-                    else:
-                        collection.remove(doc)
-                        break
-            for doc in collection:
-                LOGGER.info(f"FOUND NEW NEEM: {doc['_id']}")
-            if len(collection) == 0:
-                LOGGER.error("NO NEEMS FOUND THAT CONFORM TO THE GIVEN FILTERS")
-                raise
+        collection = filter_and_select_neems_in_batches(collection, sql_creator.engine, neem_filters, start_batch,
+                                                        batch_size, number_of_batches)
 
     meta_sql_creator = SQLCreator(engine=sql_creator.engine)
 
@@ -1344,7 +1458,7 @@ def get_mongo_neems_and_put_into_sql_database(engine: Engine, client: MongoClien
                                               skip_bad_triples: Optional[bool] = False,
                                               neem_filters: Optional[dict] = None,
                                               batch_size: Optional[int] = 4,
-                                              num_batches: Optional[int] = -1,
+                                              number_of_batches: Optional[int] = -1,
                                               start_batch: Optional[int] = 0,
                                               dump_data_stats: Optional[bool] = True) -> None:
     db = client.neems
@@ -1365,28 +1479,29 @@ def get_mongo_neems_and_put_into_sql_database(engine: Engine, client: MongoClien
     # Adding meta data
     meta = db.meta
     meta_lod = mongo_collection_to_list_of_dicts(meta)
+    number_of_batches = number_of_batches if number_of_batches > 0 else (
+        int(ceil(len(meta_lod) / batch_size) - start_batch))
     meta_lod = neem_collection_to_sql("neems",
                                       meta_lod,
                                       sql_creator=sql_creator,
-                                      neem_filters=neem_filters)
+                                      neem_filters=neem_filters,
+                                      start_batch=start_batch,
+                                      batch_size=batch_size,
+                                      number_of_batches=number_of_batches)
     meta_lod = list(reversed(meta_lod))
     if len(meta_lod) == 0:
         LOGGER.error("NO NEEMS FOUND (Probably no meta data collection OR no neems with the given filters)")
         raise ValueError("NO NEEMS FOUND (Probably no meta data collection OR no neems with the given filters)")
-    batch_sz = batch_size
-    start_from = start_batch
-    meta_lod_batches = [meta_lod[i:i + batch_sz] for i in range(0, len(meta_lod), batch_sz)]
-    first_n_batches = num_batches if num_batches > 0 else len(meta_lod_batches) - start_from
+    meta_lod_batches = [meta_lod[i:i + batch_size] for i in range(0, len(meta_lod), batch_size)]
     coll_names = ['tf', 'triples', 'annotations', 'inferred']
     verification_time = 0
     total_time = 0
     tf_len = []
-    n_batches = len(meta_lod_batches[start_from:start_from + first_n_batches])
     # Verifying data
-    for batch_idx, batch in enumerate(meta_lod_batches[start_from:start_from + first_n_batches]):
+    for batch_idx, batch in enumerate(meta_lod_batches):
 
         verification = tqdm(total=len(batch) * len(coll_names),
-                            desc=f"Verifying Data (batch {batch_idx + start_from + 1}/{len(meta_lod_batches)})", colour='#FFA500')
+                            desc=f"Verifying Data (batch {batch_idx + 1}/{number_of_batches})", colour='#FFA500')
 
         for d_i, doc in enumerate(batch):
 
@@ -1416,12 +1531,12 @@ def get_mongo_neems_and_put_into_sql_database(engine: Engine, client: MongoClien
     data_sizes.update({'predicate_indexing': [], 'tf_triples_linking': [], 'data_upload': []})
     data_times = {c: [] for c in coll_names}
     data_times.update({'predicate_indexing': [], 'tf_triples_linking': [], 'data_upload': []})
-    for batch_idx, batch in enumerate(meta_lod_batches[start_from:start_from + first_n_batches]):
+    for batch_idx, batch in enumerate(meta_lod_batches):
         all_docs = 0
         collections = {}
         meta_data = tqdm(total=len(batch) * len(coll_names),
-                         desc=f"Collecting & Restructuring Data (batch {batch_idx + start_from + 1}/"
-                              f"{len(meta_lod_batches)})",
+                         desc=f"Collecting & Restructuring Data (batch {batch_idx + 1}/"
+                              f"{number_of_batches})",
                          colour='#FFA500')
         for d_i, doc in enumerate(batch):
 
@@ -1510,7 +1625,7 @@ def parse_arguments():
     parser.add_argument('--batch_size', '-bs', default=4, type=int, help='Batch size (number of neems per'
                                                                          ' batch) for uploading data to the database, \
         this is important for memory issues, if you encounter a memory problem try to reduce that number')
-    parser.add_argument('--num_batches', '-nb', default=0, type=int,
+    parser.add_argument('--number_of_batches', '-nb', default=0, type=int,
                         help='Number of batches to upload the data to the database')
     parser.add_argument('--start_batch', '-sb', default=0, type=int, help='Start uploading from this batch')
     parser.add_argument('--dump_data_stats', '-dds', action='store_true',
@@ -1603,9 +1718,7 @@ def set_logging_level(log_level: str):
     Args:
         log_level: The logging level.
     """
-    # set log level
-    LOGGER.setLevel(log_level_dict[log_level])
-    stream_handler.setLevel(log_level_dict[log_level])
+    CustomLogger.set_log_level(log_level_dict[log_level])
 
 
 def get_neem_filters_from_yaml(neem_filters_yaml: Optional[str] = None) -> dict:
