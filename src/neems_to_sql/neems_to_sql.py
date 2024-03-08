@@ -154,7 +154,7 @@ def get_value_from_sql(table_name: str, engine: Engine, col_name: Optional[str] 
     return result
 
 
-def get_sql_meta_data(engine: Engine) -> Tuple[dict, dict, dict]:
+def get_sql_meta_data(engine: Engine) -> Tuple[dict, dict, dict, dict]:
     """Get the names of the tables and columns from the database
 
     Args:
@@ -171,6 +171,7 @@ def get_sql_meta_data(engine: Engine) -> Tuple[dict, dict, dict]:
     meta_data = {}
     data_types = {}
     data_bytes = {}
+    max_ids = {}
     with engine.connect() as conn:
         result = conn.execute(stmt)
         for row in result:
@@ -180,11 +181,40 @@ def get_sql_meta_data(engine: Engine) -> Tuple[dict, dict, dict]:
                 meta_data[row[0]].append(row[1])
                 data_types[row[0]] = {row[1]: row[2]}
                 data_bytes[row[0]] = {row[1]: sql_type_to_byte_size(row[2])}
+            else:
+                max_ids[row[0]] = get_max_id_from_sql(engine, row[0])
         if result.rowcount == 0:
             LOGGER.debug("No data found")
         else:
             LOGGER.debug(f"{result.rowcount} row(s) found")
-        return meta_data, data_types, data_bytes
+        return meta_data, data_types, data_bytes, max_ids
+
+
+# noinspection PyBroadException
+def get_max_id_from_sql(engine: Engine, table_name: str, col_name: Optional[str] = 'ID') -> int:
+    """Retrieve the maximum id from a table .
+
+    Args:
+        engine (Engine): [The sqlalchemy engine to use to connect to the database.]
+        table_name (str): [The name of the table to retrieve the ids from.]
+        col_name (str, optional): [The name of the column to retrieve the maximum id from]. Defaults to 'ID'.
+
+    Returns:
+        [int]: [the maximum id in the table, or 0 if the table is empty.]
+    """
+    sql_cmd = f"SELECT MAX({col_name}) FROM {table_name};"
+    with engine.connect() as conn:
+        try:
+            result = conn.execute(text(sql_cmd))
+            result = result.fetchall()
+            result = [x[0] for x in result]
+            if len(result) == 0:
+                result = 0
+            else:
+                result = result[0] if result[0] is not None else 0
+        except:
+            result = 0
+    return result
 
 
 class SQLCreator:
@@ -232,7 +262,8 @@ class SQLCreator:
         self.tosql_func = tosql_func
         self.data_bytes = {}
         self.data_types = {}
-        self.sql_meta_data, self.original_data_types, self.original_data_bytes = get_sql_meta_data(self.engine)
+        self.sql_meta_data, self.original_data_types, self.original_data_bytes, self.max_ids = \
+            get_sql_meta_data(self.engine)
         self.allow_increasing_size = allow_increasing_size
         self.allow_text_indexing = allow_text_indexing
 
@@ -241,7 +272,8 @@ class SQLCreator:
         """
         self.sql_table_creation_cmds = OrderedSet()
         self.data_to_insert = {}
-        self.sql_meta_data, self.original_data_types, self.original_data_bytes = get_sql_meta_data(self.engine)
+        self.sql_meta_data, self.original_data_types, self.original_data_bytes, self.max_ids =\
+            get_sql_meta_data(self.engine)
 
     def merge_with(self, sql_creator: 'SQLCreator') -> None:
         """Merge another SQL creator .
@@ -481,8 +513,8 @@ class SQLCreator:
             # This checks if all the keys (i.e. columns) where defined before, and have values already.
             all_keys_exist = False
             latest_id = 0
-            if table_name in self.sql_meta_data:
-                latest_id = self.get_max_id_from_sql(table_name)
+            if table_name in self.max_ids.keys():
+                latest_id = self.max_ids[table_name]
             if parent_list:
                 if table_name in self.sql_meta_data:
                     res = get_value_from_sql(table_name, self.engine, col_value_pairs=obj)
@@ -744,31 +776,6 @@ class SQLCreator:
                 return
         self.sql_table_creation_cmds.add(
             f"CREATE {full_text}INDEX IF NOT EXISTS {idx_name} ON {table_name} ({column_name});")
-
-    # noinspection PyBroadException
-    def get_max_id_from_sql(self, table_name: str, col_name: Optional[str] = 'ID') -> int:
-        """Retrieve the maximum id from a table .
-
-        Args:
-            table_name (str): [The name of the table to retrieve the ids from.]
-            col_name (str, optional): [The name of the column to retrieve the maximum id from]. Defaults to 'ID'.
-
-        Returns:
-            [int]: [the maximum id in the table, or 0 if the table is empty.]
-        """
-        sql_cmd = f"SELECT MAX({col_name}) FROM {table_name};"
-        with self.engine.connect() as conn:
-            try:
-                result = conn.execute(text(sql_cmd))
-                result = result.fetchall()
-                result = [x[0] for x in result]
-                if len(result) == 0:
-                    result = 0
-                else:
-                    result = result[0] if result[0] is not None else 0
-            except:
-                result = 0
-        return result
 
     def link_column_to_new_table(self, parent_table_name: str, type_name: str, instance_table_indicies: list,
                                  original_table_indicies: list) -> str:
@@ -1303,36 +1310,37 @@ def link_tf_and_triples(data: dict, sql_creator: SQLCreator, use_pbar: Optional[
         Tuple[int, float]: [The number of iterations and the time it took to link the data]
     """
     time_start = np.array(sql_creator.data_to_insert['soma_hasIntervalBegin']['o'])
-    tsi = np.array(sql_creator.data_to_insert['soma_hasIntervalBegin']['dul_TimeInterval_s'])
-    tei = np.array(sql_creator.data_to_insert['soma_hasIntervalEnd']['dul_TimeInterval_s'])
+    time_start_indices = np.array(sql_creator.data_to_insert['soma_hasIntervalBegin']['dul_TimeInterval_s'])
+    time_end_indices = np.array(sql_creator.data_to_insert['soma_hasIntervalEnd']['dul_TimeInterval_s'])
     time_end = np.array(sql_creator.data_to_insert['soma_hasIntervalEnd']['o'])
-    e_neem_id = np.array(sql_creator.data_to_insert['soma_hasIntervalEnd']['neem_id'])
-    s_neem_id = np.array(sql_creator.data_to_insert['soma_hasIntervalBegin']['neem_id'])
+    end_neem_ids = np.array(sql_creator.data_to_insert['soma_hasIntervalEnd']['neem_id'])
+    start_neem_ids = np.array(sql_creator.data_to_insert['soma_hasIntervalBegin']['neem_id'])
     stamp = np.array(data['tf_header']['stamp'])
     links = np.array(data['tf']['child_frame_id'])
     stamp_neem_id = np.array(data['tf']['neem_id'])
-    latest_stampidx, latest_sidx, latest_eidx = 0, 0, 0
-    if 'tf_header' in sql_creator.sql_meta_data:
-        latest_stampidx = sql_creator.get_max_id_from_sql('tf_header')
+    latest_stamp_idx, latest_start_idx, latest_end_idx = 0, 0, 0
+    if 'tf_header' in sql_creator.max_ids:
+        latest_stamp_idx = sql_creator.max_ids['tf_header']
     if 'soma_hasIntervalBegin' in sql_creator.sql_meta_data:
-        latest_sidx = sql_creator.get_max_id_from_sql('soma_hasIntervalBegin')
+        latest_start_idx = sql_creator.max_ids['soma_hasIntervalBegin']
     if 'soma_hasIntervalEnd' in sql_creator.sql_meta_data:
-        latest_eidx = sql_creator.get_max_id_from_sql('soma_hasIntervalEnd')
-    e_idx_list = []
-    s_idx_list = []
+        latest_end_idx = sql_creator.max_ids['soma_hasIntervalEnd']
+    end_idx_list = []
+    start_idx_list = []
     stamp_idx = []
     pbar = None
     if use_pbar:
         pbar = tqdm(total=len(time_end), desc="Linking TF and Triples", colour="#FFA500")
     for e_idx, e in enumerate(time_end):
-        neem_id_cond = np.equal(s_neem_id, e_neem_id[e_idx])
-        time_interval_cond = np.equal(tsi, tei[e_idx])
+        neem_id_cond = np.equal(start_neem_ids, end_neem_ids[e_idx])
+        time_interval_cond = np.equal(time_start_indices, time_end_indices[e_idx])
         s_idicies = np.argwhere(np.logical_and(time_interval_cond, neem_id_cond)).flatten()
         for s_idx in s_idicies:
             s = time_start[s_idx]
             cond1 = np.greater_equal(stamp, s)
             cond2 = np.less(stamp, e)
-            cond3 = np.logical_and(np.equal(e_neem_id[e_idx], stamp_neem_id), np.equal(s_neem_id[s_idx], stamp_neem_id))
+            cond3 = np.logical_and(np.equal(end_neem_ids[e_idx], stamp_neem_id), np.equal(start_neem_ids[s_idx],
+                                                                                          stamp_neem_id))
             cond4 = True
             res = np.argwhere(np.logical_and(np.logical_and(np.logical_and(cond1, cond2), cond3), cond4)).flatten()
             res = res[np.argsort(stamp[res])]
@@ -1355,11 +1363,11 @@ def link_tf_and_triples(data: dict, sql_creator: SQLCreator, use_pbar: Optional[
             new_res = list(new_res)
             assert all([r - 1 in res for r in new_res])
             assert all([s <= stamp[r - 1] < e for r in new_res])
-            res = [r + latest_stampidx for r in new_res]
+            res = [r + latest_stamp_idx for r in new_res]
             if len(res) > 0:
                 stamp_idx.extend(res)
-                e_idx_list.extend([e_idx + 1 + latest_eidx] * len(res))
-                s_idx_list.extend([s_idx + 1 + latest_sidx] * len(res))
+                end_idx_list.extend([e_idx + 1 + latest_end_idx] * len(res))
+                start_idx_list.extend([s_idx + 1 + latest_start_idx] * len(res))
         if pbar is not None:
             pbar.update(1)
     pbar_time = 0
@@ -1367,9 +1375,10 @@ def link_tf_and_triples(data: dict, sql_creator: SQLCreator, use_pbar: Optional[
         pbar_time = pbar.format_dict['elapsed']
         pbar.close()
     new_table_name = sql_creator.link_column_to_new_table('tf_header', 'soma_hasIntervalBegin',
-                                                          stamp_idx, s_idx_list)
-    sql_creator.add_foreign_key_column('soma_hasIntervalEnd', new_table_name, 'soma_hasIntervalEnd_ID')
-    sql_creator.data_to_insert[new_table_name]['soma_hasIntervalEnd_ID'] = e_idx_list
+                                                          stamp_idx, start_idx_list)
+    sql_creator.add_foreign_key_column('soma_hasIntervalEnd', new_table_name,
+                                       'soma_hasIntervalEnd_ID')
+    sql_creator.data_to_insert[new_table_name]['soma_hasIntervalEnd_ID'] = end_idx_list
     return len(time_end), pbar_time
 
 
