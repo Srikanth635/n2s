@@ -47,35 +47,35 @@ class NeemToSqlTestCase(TestCase):
 
 class TestNeemToSql(NeemToSqlTestCase):
     def test_sequential_neem_to_sql(self):
-        get_mongo_neems_and_put_into_sql_database(self.engine, self.mongo_client, 'test',
+        get_mongo_neems_and_put_into_sql_database(self.engine, self.mongo_client,
                                                   number_of_batches=1,
                                                   batch_size=1,
                                                   start_batch=0)
         self.mongo_client = connect_to_mongo_and_get_client("mongodb://localhost:27017/neems")
-        get_mongo_neems_and_put_into_sql_database(self.engine, self.mongo_client, 'test',
+        get_mongo_neems_and_put_into_sql_database(self.engine, self.mongo_client,
                                                   number_of_batches=1, batch_size=1,
                                                   start_batch=1)
 
     def test_one_batch(self):
-        get_mongo_neems_and_put_into_sql_database(self.engine, self.mongo_client, 'test',
+        get_mongo_neems_and_put_into_sql_database(self.engine, self.mongo_client,
                                                   number_of_batches=1, batch_size=2,
                                                   start_batch=0)
 
     def test_with_drop(self):
-        get_mongo_neems_and_put_into_sql_database(self.engine, self.mongo_client, 'test',
+        get_mongo_neems_and_put_into_sql_database(self.engine, self.mongo_client,
                                                   drop_tables=True,
                                                   number_of_batches=1,
                                                   batch_size=1,
                                                   start_batch=0)
         self.mongo_client = connect_to_mongo_and_get_client("mongodb://localhost:27017/neems")
-        get_mongo_neems_and_put_into_sql_database(self.engine, self.mongo_client, 'test',
+        get_mongo_neems_and_put_into_sql_database(self.engine, self.mongo_client,
                                                   number_of_batches=1,
                                                   batch_size=1,
                                                   start_batch=1)
 
     def test_all_batches(self):
         neem_filters = {'visibility': True}
-        get_mongo_neems_and_put_into_sql_database(self.engine, self.mongo_client, 'test',
+        get_mongo_neems_and_put_into_sql_database(self.engine, self.mongo_client,
                                                   drop_tables=True,
                                                   neem_filters=neem_filters,
                                                   skip_bad_triples=True,

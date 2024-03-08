@@ -29,7 +29,7 @@ if __name__ == "__main__":
         SQL_URI = get_sql_uri(args.sql_username, args.sql_password, args.sql_host, args.sql_database)
     sql_engine = create_engine(SQL_URI)
 
-    get_mongo_neems_and_put_into_sql_database(sql_engine, mongo_client, args.sql_database,
+    get_mongo_neems_and_put_into_sql_database(sql_engine, mongo_client,
                                               drop_tables=args.drop,
                                               allow_increasing_sz=args.allow_increasing_sz,
                                               allow_text_indexing=args.allow_text_indexing,

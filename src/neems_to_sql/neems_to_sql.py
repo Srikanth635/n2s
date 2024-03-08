@@ -166,7 +166,8 @@ def get_sql_meta_data(engine: Engine) -> Tuple[dict, dict, dict]:
         [dict] : [Column data byte sizes]
     """
     stmt = text(
-        "SELECT TABLE_NAME, COLUMN_NAME, COLUMN_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = N'test'")
+        f"SELECT TABLE_NAME, COLUMN_NAME, COLUMN_TYPE FROM INFORMATION_SCHEMA.COLUMNS"
+        f" WHERE TABLE_SCHEMA = N'{engine.url.database}'")
     meta_data = {}
     data_types = {}
     data_bytes = {}
@@ -488,8 +489,6 @@ class SQLCreator:
                     if len(res) != 0:
                         ID = res[-1]
                         return obj, type(obj), np.iterable(obj) and not isinstance(obj, str), ID
-                    else:
-                        latest_id = self.get_max_id_from_sql(table_name)
                 if table_name in self.data_to_insert.keys():
                     if isinstance(self.data_to_insert[table_name], dict):
                         all_keys_exist = all([k in self.data_to_insert[table_name].keys() for k in obj.keys()])
@@ -1429,13 +1428,13 @@ def link_and_upload(sql_creator: SQLCreator,
     return total_time
 
 
-def drop_all_tables(engine: Engine, sql_data_base_name: str):
+def drop_all_tables(engine: Engine):
     conn = engine.connect()
     conn.execute(text("SET FOREIGN_KEY_CHECKS=0;"))
     drop_cmd = text(f"""
         SELECT CONCAT('DROP TABLE IF EXISTS `', TABLE_SCHEMA, '`.`', TABLE_NAME, '` CASCADE;')
         FROM information_schema.TABLES
-        WHERE TABLE_SCHEMA = '{sql_data_base_name}';
+        WHERE TABLE_SCHEMA = '{engine.url.database}';
     """)
     try:
         result = conn.execute(drop_cmd)
@@ -1450,7 +1449,7 @@ def drop_all_tables(engine: Engine, sql_data_base_name: str):
         conn.close()
 
 
-def get_mongo_neems_and_put_into_sql_database(engine: Engine, client: MongoClient, sql_database_name: str,
+def get_mongo_neems_and_put_into_sql_database(engine: Engine, client: MongoClient,
                                               drop_tables: Optional[bool] = False,
                                               allow_increasing_sz: Optional[bool] = False,
                                               allow_text_indexing: Optional[bool] = False,
@@ -1464,7 +1463,7 @@ def get_mongo_neems_and_put_into_sql_database(engine: Engine, client: MongoClien
     db = client.neems
 
     if drop_tables:
-        drop_all_tables(engine, sql_database_name)
+        drop_all_tables(engine)
 
     t2sql = TriplesToSQL(logger=LOGGER)
     sql_creator = SQLCreator(engine, tosql_func=lambda v, table_name: get_sql_type_from_pyval(v),
@@ -1633,7 +1632,7 @@ def parse_arguments():
                         help='Dump the data statistics like the sizes and time taken for each operation to a file')
     parser.add_argument('--sql_username', '-su', help='SQL username')
     parser.add_argument('--sql_password', '-sp', help='SQL password')
-    parser.add_argument('--sql_database', '-sd', help='SQL database name', required=True)
+    parser.add_argument('--sql_database', '-sd', help='SQL database name')
     parser.add_argument('--sql_host', '-sh', default="localhost", help='SQL host name')
     parser.add_argument('--sql_uri', '-suri', type=str, default=None,
                         help='SQL URI this replaces the other SQL arguments')
