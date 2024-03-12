@@ -1,4 +1,5 @@
 import argparse
+from dataclasses import dataclass, astuple
 import logging
 import pickle
 import re
@@ -26,6 +27,15 @@ from .triples_to_sql import TriplesToSQL, get_sql_type_from_pyval
 LOGGER = CustomLogger.LOGGER
 log_level_dict = {'DEBUG': logging.DEBUG, 'INFO': logging.INFO, 'WARNING': logging.WARNING, 'ERROR': logging.ERROR,
                   'CRITICAL': logging.CRITICAL}
+
+
+@dataclass
+class MetaData:
+    table_data: Dict[str, List[str]]
+    data_types: Dict[str, Dict[str, str]]
+    data_bytes: Dict[str, Dict[str, int]]
+    max_ids: Dict[str, int]
+    constraints: Dict[str, List[Tuple[str, str, str]]]
 
 
 def sql_type_to_byte_size(sql_type: str) -> int:
@@ -154,7 +164,7 @@ def get_value_from_sql(table_name: str, engine: Engine, col_name: Optional[str] 
     return result
 
 
-def get_sql_meta_data(engine: Engine) -> Tuple[dict, dict, dict, dict]:
+def get_sql_meta_data(engine: Engine) -> MetaData:
     """Get the names of the tables and columns from the database
 
     Args:
@@ -168,17 +178,17 @@ def get_sql_meta_data(engine: Engine) -> Tuple[dict, dict, dict, dict]:
     stmt = text(
         f"SELECT TABLE_NAME, COLUMN_NAME, COLUMN_TYPE FROM INFORMATION_SCHEMA.COLUMNS"
         f" WHERE TABLE_SCHEMA = N'{engine.url.database}'")
-    meta_data = {}
+    table_data = {}
     data_types = {}
     data_bytes = {}
     max_ids = {}
     with engine.connect() as conn:
         result = conn.execute(stmt)
         for row in result:
-            if row[0] not in meta_data:
-                meta_data[row[0]] = []
+            if row[0] not in table_data:
+                table_data[row[0]] = []
             if row[1] != 'ID':
-                meta_data[row[0]].append(row[1])
+                table_data[row[0]].append(row[1])
                 data_types[row[0]] = {row[1]: row[2]}
                 data_bytes[row[0]] = {row[1]: sql_type_to_byte_size(row[2])}
             else:
@@ -187,7 +197,40 @@ def get_sql_meta_data(engine: Engine) -> Tuple[dict, dict, dict, dict]:
             LOGGER.debug("No data found")
         else:
             LOGGER.debug(f"{result.rowcount} row(s) found")
-        return meta_data, data_types, data_bytes, max_ids
+
+    constraints = get_constraints(engine)
+    meta_data = MetaData(table_data, data_types, data_bytes, max_ids, constraints)
+
+    return meta_data
+
+
+def get_constraints(engine: Engine) -> dict:
+    constraints_stmt = text(
+        f"SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, "
+        f"REFERENCED_TABLE_SCHEMA, REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME "
+        f"FROM INFORMATION_SCHEMA`.`KEY_COLUMN_USAGE "
+        f"WHERE TABLE_SCHEMA = N'{engine.url.database}' AND REFERENCED_TABLE_NAME IS NOT NULL;")
+    col_idx_name_map = {0: 'TABLE_SCHEMA', 1: 'TABLE_NAME', 2: 'COLUMN_NAME', 3: 'REFERENCED_TABLE_SCHEMA',
+                        4: 'REFERENCED_TABLE_NAME', 5: 'REFERENCED_COLUMN_NAME'}
+    col_idx = {v: k for k, v in col_idx_name_map.items()}
+    with engine.connect() as conn:
+        result = conn.execute(constraints_stmt)
+        constraints = {}
+        for row in result:
+            table_name = row[col_idx['TABLE_NAME']]
+            if table_name not in constraints:
+                constraints[table_name] = []
+            col_name = row[col_idx['COLUMN_NAME']]
+            ref_table_name = row[col_idx['REFERENCED_TABLE_NAME']]
+            ref_col_name = row[col_idx['REFERENCED_COLUMN_NAME']]
+            constraints[table_name].append((col_name, ref_table_name, ref_col_name))
+
+        if result.rowcount == 0:
+            LOGGER.debug("No constraints data found")
+        else:
+            LOGGER.debug(f"{result.rowcount} row(s) found for constraints")
+
+    return constraints
 
 
 # noinspection PyBroadException
@@ -262,8 +305,8 @@ class SQLCreator:
         self.tosql_func = tosql_func
         self.data_bytes = {}
         self.data_types = {}
-        self.sql_meta_data, self.original_data_types, self.original_data_bytes, self.max_ids = \
-            get_sql_meta_data(self.engine)
+        self.table_data, self.original_data_types, self.original_data_bytes, self.max_ids, self.constraints\
+            = astuple(get_sql_meta_data(self.engine))
         self.allow_increasing_size = allow_increasing_size
         self.allow_text_indexing = allow_text_indexing
 
@@ -272,7 +315,7 @@ class SQLCreator:
         """
         self.sql_table_creation_cmds = OrderedSet()
         self.data_to_insert = {}
-        self.sql_meta_data, self.original_data_types, self.original_data_bytes, self.max_ids =\
+        self.table_data, self.original_data_types, self.original_data_bytes, self.max_ids = \
             get_sql_meta_data(self.engine)
 
     def merge_with(self, sql_creator: 'SQLCreator') -> None:
@@ -370,10 +413,10 @@ class SQLCreator:
                 for k, v in obj.items():
                     if '#' in k:
                         k = k.split('#')[1]
-                    if k not in self.all_obj_keys[key] and k not in self.sql_meta_data.get(key, []):
+                    if k not in self.all_obj_keys[key] and k not in self.table_data.get(key, []):
                         self.not_always_there.append(key + '.' + k)
                 for k, v in self.all_obj_keys[key].items():
-                    if k not in obj_k and k not in self.sql_meta_data.get(key, []):
+                    if k not in obj_k and k not in self.table_data.get(key, []):
                         self.not_always_there.append(key + '.' + k)
             else:
                 self.all_obj_keys[key] = {}
@@ -387,12 +430,12 @@ class SQLCreator:
                 if isinstance(v, list):
                     if len(v) == 1:
                         if (key + '.' + k not in self.one_item_lists and key + '.' + k not in self.not_one_item_lists) \
-                                or k in self.sql_meta_data.get(key, []):
+                                or k in self.table_data.get(key, []):
                             self.one_item_lists.append(key + '.' + k)
                     else:
-                        if key + '.' + k not in self.not_one_item_lists and k not in self.sql_meta_data.get(key, []):
+                        if key + '.' + k not in self.not_one_item_lists and k not in self.table_data.get(key, []):
                             self.not_one_item_lists.append(key + '.' + k)
-                        if key + '.' + k in self.one_item_lists and k not in self.sql_meta_data.get(key, []):
+                        if key + '.' + k in self.one_item_lists and k not in self.table_data.get(key, []):
                             self.one_item_lists.remove(key + '.' + k)
 
             for k, v in obj.items():
@@ -410,12 +453,12 @@ class SQLCreator:
                 if isinstance(v, dict):
                     if len(v) == 1:
                         if (table_name not in self.one_item_lists and table_name not in self.not_one_item_lists) \
-                                or table_name in self.sql_meta_data:
+                                or table_name in self.table_data:
                             self.one_item_lists.append(table_name)
                     else:
-                        if table_name not in self.not_one_item_lists and table_name not in self.sql_meta_data:
+                        if table_name not in self.not_one_item_lists and table_name not in self.table_data:
                             self.not_one_item_lists.append(table_name)
-                        if table_name in self.one_item_lists and table_name not in self.sql_meta_data:
+                        if table_name in self.one_item_lists and table_name not in self.table_data:
                             self.one_item_lists.remove(table_name)
                 self.find_relationships(key, v, parent_key)
         else:
@@ -431,7 +474,7 @@ class SQLCreator:
             for k, count in all_count.items():
                 if k == 'key_count':
                     continue
-                if k not in self.sql_meta_data.get(key, []):
+                if k not in self.table_data.get(key, []):
                     if ((1 - count / total_count) * 100) > self.allowed_missing_percentage:
                         self.not_always_there.append(key + '.' + k)
 
@@ -516,7 +559,7 @@ class SQLCreator:
             if table_name in self.max_ids.keys():
                 latest_id = self.max_ids[table_name]
             if parent_list:
-                if table_name in self.sql_meta_data:
+                if table_name in self.table_data:
                     res = get_value_from_sql(table_name, self.engine, col_value_pairs=obj)
                     if len(res) != 0:
                         ID = res[-1]
@@ -717,6 +760,9 @@ class SQLCreator:
             col_name (str, optional): [the name of the column to add]. Defaults to 'ID'.
             parent_col_name (str, optional): [the name of the column to link to in the parent table]. Defaults to 'ID'.
         """
+        if table_name in self.constraints.keys():
+            if (col_name, parent_table_name, parent_col_name) in self.constraints[table_name]:
+                return
         col_string = (f"ALTER TABLE {table_name} ADD FOREIGN KEY IF NOT EXISTS ({col_name})"
                       f" REFERENCES {parent_table_name}({parent_col_name})")
         self.sql_table_creation_cmds.add(col_string)
@@ -1321,9 +1367,9 @@ def link_tf_and_triples(data: dict, sql_creator: SQLCreator, use_pbar: Optional[
     latest_stamp_idx, latest_start_idx, latest_end_idx = 0, 0, 0
     if 'tf_header' in sql_creator.max_ids:
         latest_stamp_idx = sql_creator.max_ids['tf_header']
-    if 'soma_hasIntervalBegin' in sql_creator.sql_meta_data:
+    if 'soma_hasIntervalBegin' in sql_creator.table_data:
         latest_start_idx = sql_creator.max_ids['soma_hasIntervalBegin']
-    if 'soma_hasIntervalEnd' in sql_creator.sql_meta_data:
+    if 'soma_hasIntervalEnd' in sql_creator.table_data:
         latest_end_idx = sql_creator.max_ids['soma_hasIntervalEnd']
     end_idx_list = []
     start_idx_list = []
