@@ -206,10 +206,10 @@ def get_sql_meta_data(engine: Engine) -> MetaData:
 
 def get_constraints(engine: Engine) -> dict:
     constraints_stmt = text(
-        f"SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, "
-        f"REFERENCED_TABLE_SCHEMA, REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME "
-        f"FROM INFORMATION_SCHEMA`.`KEY_COLUMN_USAGE "
-        f"WHERE TABLE_SCHEMA = N'{engine.url.database}' AND REFERENCED_TABLE_NAME IS NOT NULL;")
+        f"SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME,"
+        f" REFERENCED_TABLE_SCHEMA, REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME"
+        f" FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE"
+        f" WHERE TABLE_SCHEMA = N'{engine.url.database}' AND REFERENCED_TABLE_NAME IS NOT NULL;")
     col_idx_name_map = {0: 'TABLE_SCHEMA', 1: 'TABLE_NAME', 2: 'COLUMN_NAME', 3: 'REFERENCED_TABLE_SCHEMA',
                         4: 'REFERENCED_TABLE_NAME', 5: 'REFERENCED_COLUMN_NAME'}
     col_idx = {v: k for k, v in col_idx_name_map.items()}
