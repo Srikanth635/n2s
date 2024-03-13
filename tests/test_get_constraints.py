@@ -14,4 +14,5 @@ class TestGetConstraints(TestCase):
 
     def test_get_constraints(self):
         constraints = get_constraints(self.engine)
-        print(constraints)
+        self.assertTrue(len(constraints) > 0)
+
