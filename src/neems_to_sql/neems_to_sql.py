@@ -315,8 +315,8 @@ class SQLCreator:
         """
         self.sql_table_creation_cmds = OrderedSet()
         self.data_to_insert = {}
-        self.table_data, self.original_data_types, self.original_data_bytes, self.max_ids = \
-            get_sql_meta_data(self.engine)
+        self.table_data, self.original_data_types, self.original_data_bytes, self.max_ids, self.constraints \
+            = astuple(get_sql_meta_data(self.engine))
 
     def merge_with(self, sql_creator: 'SQLCreator') -> None:
         """Merge another SQL creator .
