@@ -2,4 +2,5 @@ __pycache__/*
 *.pyc
 *.pickle
 *.json
+test.sql
 stdout_file.txt

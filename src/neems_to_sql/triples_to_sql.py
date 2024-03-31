@@ -173,7 +173,7 @@ class TriplesToSQL:
         self.g = Graph(bind_namespaces="rdflib")
         for knsname, kns in self.ns.items():
             self.g.bind(knsname, kns)
-            self.g.add((Literal(knsname), RDFS.isDefinedBy, Literal(self.ns_str[knsname])))
+            self.g.add((Literal(knsname.replace('"', '\"')), RDFS.isDefinedBy, Literal(self.ns_str[knsname])))
 
     def get_sql_type(self, val: object, property_name: Optional[str] = None) -> Tuple[str, int]:
         """Get the SQL type of a value, if this value is an output of a triple property, then the property name should be provided,
@@ -359,12 +359,16 @@ class TriplesToSQL:
             print(json.dumps(self.ns, indent=4))
             print(len(self.ns))
 
-    def graph_to_dict(self, dump: Optional[bool] = False, graph: Optional[Graph] = None) -> Dict:
+    def graph_to_dict(self, save_path: Optional[str] = None, graph: Optional[Graph] = None,
+                      file_name: Optional[str] = 'predicate_dict.json') -> Dict:
         """Convert the graph to a dictionary of predicates and their subjects and objects.
         
         Args:
-            dump (Optional[bool], optional): If True, dump the dictionary to a json file. Defaults to False.
+            save_path (Optional[str], optional): If not None, save the dictionary as a json file to the specified path.
+            Defaults to None.
             graph (Optional[Graph], optional): The graph to convert to a dictionary. Defaults to None.
+            file_name (Optional[str], optional): The name of the file to save the dictionary to.
+             Defaults to 'predicate_dict.json'.
 
         Returns:
             Dict: A dictionary of predicates and their subjects and objects.
@@ -375,12 +379,12 @@ class TriplesToSQL:
             p_n3 = p.n3(g.namespace_manager) if isinstance(p, URIRef) or isinstance(p, Literal) else p
             if p_n3 not in predicate_dict:
                 predicate_dict[p_n3] = {'s': [], 'o': []}
-            s_n3 = s.n3(g.namespace_manager).strip('<>') if isinstance(s, URIRef) or isinstance(s, Literal) else str(s)
+            s_n3 = s.n3(g.namespace_manager).strip('<>').strip('"') if isinstance(s, URIRef) or isinstance(s, Literal) else str(s)
             if "iai-kitchen.owl" in s_n3:
                 s_n3 = s_n3.replace("iai-kitchen.owl", "IAI-kitchen.owl")
             if '#' in s_n3 and s_n3.startswith('http'):
                 s_n3 = URIRef(s_n3).n3(g.namespace_manager)
-            s_n3 = s_n3.strip('<>')
+            s_n3 = s_n3.strip('<>').strip('"')
             predicate_dict[p_n3]['s'].append(s_n3)
             new_o = self.ont_2_py(o, p)
 
@@ -393,11 +397,11 @@ class TriplesToSQL:
 
                 if '#' in new_o and new_o.startswith('http'):
                     new_o = URIRef(new_o).n3(g.namespace_manager)
-                new_o = new_o.strip('<>')
+                new_o = new_o.strip('<>').strip('"')
 
             if type(new_o) in [URIRef, Literal]:
                 new_o = new_o.n3(g.namespace_manager)
-                new_o = new_o.strip('<>')
+                new_o = new_o.strip('<>').strip('"')
             predicate_dict[p_n3]['o'].append(new_o)
 
         predicate_dict_cp = deepcopy(predicate_dict)
@@ -442,8 +446,10 @@ class TriplesToSQL:
             new_predicate_dict[new_p] = [{k1: predicate_dict[new_p][k1][i], k2: predicate_dict[new_p][k2][i]} for i in
                                          range(len(predicate_dict[new_p][k1]))]
         self.predicate_dict.update(predicate_dict)
-        if dump:
-            json.dump(new_predicate_dict, open('predicate_dict.json', 'w'), indent=4)
+        if save_path is not None:
+            path = os.path.join(save_path, file_name)
+            with open(path, 'w') as f:
+                json.dump(new_predicate_dict, f, indent=4)
         return new_predicate_dict
 
     def find_link_in_graph_dict(self, value: str, data: Dict) -> Tuple[Optional[int], Optional[object]]:

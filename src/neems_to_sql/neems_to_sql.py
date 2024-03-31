@@ -1,10 +1,10 @@
 import argparse
-import os
-from dataclasses import dataclass, astuple
 import logging
+import os
 import pickle
 import re
 from copy import deepcopy
+from dataclasses import dataclass, astuple
 from datetime import datetime
 from math import ceil
 from time import time
@@ -37,6 +37,7 @@ class MetaData:
     data_bytes: Dict[str, Dict[str, int]]
     max_ids: Dict[str, int]
     constraints: Dict[str, List[Tuple[str, str, str]]]
+    unique_constraints: Dict[str, List[str]]
 
 
 def sql_type_to_byte_size(sql_type: str) -> int:
@@ -129,6 +130,29 @@ def py2sql(val: object,
         raise ValueError(f"UNKOWN DATA TYPE {val_type}")
 
 
+def create_database_if_not_exists_and_use_it(engine: Engine, db_name: str) -> None:
+    """Create a database if it does not exist
+
+    Args:
+        engine ([Engine]): [sqlalchemy engine]
+        db_name ([str]): [name of the database]
+    """
+    with engine.connect() as conn:
+        conn.execute(text(f"CREATE DATABASE IF NOT EXISTS {db_name};"))
+        conn.execute(text(f"USE {db_name};"))
+
+
+def delete_database_if_exists(engine: Engine, db_name: str) -> None:
+    """Delete a database if it exists
+
+    Args:
+        engine ([Engine]): [sqlalchemy engine]
+        db_name ([str]): [name of the database]
+    """
+    with engine.connect() as conn:
+        conn.execute(text(f"DROP DATABASE IF EXISTS {db_name};"))
+
+
 # noinspection PyBroadException
 def get_value_from_sql(table_name: str, engine: Engine, col_name: Optional[str] = 'ID',
                        col_value_pairs: Optional[dict] = None) -> list:
@@ -199,13 +223,13 @@ def get_sql_meta_data(engine: Engine) -> MetaData:
         else:
             LOGGER.debug(f"{result.rowcount} row(s) found")
 
-    constraints = get_constraints(engine)
-    meta_data = MetaData(table_data, data_types, data_bytes, max_ids, constraints)
+    constraints = get_key_constraints(engine)
+    unique_constraints = get_unique_constraints_from_database(engine)
 
-    return meta_data
+    return MetaData(table_data, data_types, data_bytes, max_ids, constraints, unique_constraints)
 
 
-def get_constraints(engine: Engine) -> dict:
+def get_key_constraints(engine: Engine) -> dict:
     constraints_stmt = text(
         f"SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME,"
         f" REFERENCED_TABLE_SCHEMA, REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME"
@@ -231,6 +255,31 @@ def get_constraints(engine: Engine) -> dict:
         else:
             LOGGER.debug(f"{result.rowcount} row(s) found for constraints")
 
+    return constraints
+
+
+def get_unique_constraints_from_database(engine: Engine) -> Dict[str, List[str]]:
+    """Get the unique constraints from the database
+    Args:
+        engine ([Engine]): [sqlalchemy engine]
+    Returns:
+        [list]: [list of constraints]
+    """
+    sql_query = f"""
+    SELECT CONSTRAINT_NAME, COLUMN_NAME
+    FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
+    WHERE TABLE_SCHEMA = '{engine.url.database}'
+    AND CONSTRAINT_NAME != 'PRIMARY';
+    """
+    constraints = {}
+    with engine.connect() as conn:
+        result = conn.execute(text(sql_query))
+        if result.rowcount == 0:
+            LOGGER.debug("No constraints data found")
+        for row in result:
+            if row[0] not in constraints:
+                constraints[row[0]] = []
+            constraints[row[0]].append(row[1])
     return constraints
 
 
@@ -306,8 +355,8 @@ class SQLCreator:
         self.tosql_func = tosql_func
         self.data_bytes = {}
         self.data_types = {}
-        self.table_data, self.original_data_types, self.original_data_bytes, self.max_ids, self.constraints\
-            = astuple(get_sql_meta_data(self.engine))
+        (self.table_data, self.original_data_types, self.original_data_bytes, self.max_ids, self.key_constraints,
+         self.unique_constraints) = astuple(get_sql_meta_data(self.engine))
         self.allow_increasing_size = allow_increasing_size
         self.allow_text_indexing = allow_text_indexing
 
@@ -316,8 +365,8 @@ class SQLCreator:
         """
         self.sql_table_creation_cmds = OrderedSet()
         self.data_to_insert = {}
-        self.table_data, self.original_data_types, self.original_data_bytes, self.max_ids, self.constraints \
-            = astuple(get_sql_meta_data(self.engine))
+        (self.table_data, self.original_data_types, self.original_data_bytes, self.max_ids, self.key_constraints,
+         self.unique_constraints) = astuple(get_sql_meta_data(self.engine))
 
     def merge_with(self, sql_creator: 'SQLCreator') -> None:
         """Merge another SQL creator .
@@ -761,8 +810,8 @@ class SQLCreator:
             col_name (str, optional): [the name of the column to add]. Defaults to 'ID'.
             parent_col_name (str, optional): [the name of the column to link to in the parent table]. Defaults to 'ID'.
         """
-        if table_name in self.constraints.keys():
-            if (col_name, parent_table_name, parent_col_name) in self.constraints[table_name]:
+        if table_name in self.key_constraints.keys():
+            if (col_name, parent_table_name, parent_col_name) in self.key_constraints[table_name]:
                 return
         col_string = (f"ALTER TABLE {table_name} ADD FOREIGN KEY IF NOT EXISTS ({col_name})"
                       f" REFERENCES {parent_table_name}({parent_col_name})")
@@ -927,7 +976,7 @@ class SQLCreator:
                 all_rows_str = re.sub("(:)", "\:", all_rows_str)
                 cols_str = re.sub("(,\))", ")", cols_str)
 
-                sql_insert_commands.append(f"INSERT INTO {key} {cols_str} VALUES {all_rows_str};")
+                sql_insert_commands.append(f"INSERT IGNORE INTO {key} {cols_str} VALUES {all_rows_str};")
         return sql_insert_commands
 
     def upload_data_to_sql(self, drop_tables: Optional[bool] = True) -> Tuple[int, float]:
@@ -951,7 +1000,7 @@ class SQLCreator:
             self._drop_tables(self.data_to_insert, conn)
 
         # Create tables
-        LOGGER.info(self.sql_table_creation_cmds)
+        LOGGER.debug(self.sql_table_creation_cmds)
         pbar = tqdm(total=len(self.sql_table_creation_cmds), desc="Executing Schema Creation Commands",
                     colour='#FFA500')
         self._execute_cmds(self.sql_table_creation_cmds, conn, pbar=pbar)
@@ -959,7 +1008,7 @@ class SQLCreator:
         pbar.close()
 
         # Insert data
-        LOGGER.info(sql_insert_cmds)
+        LOGGER.debug(sql_insert_cmds)
         pbar = tqdm(total=len(sql_insert_cmds), desc="Executing Insertion Commands", colour='#FFA500')
         conn.execute(text("SET FOREIGN_KEY_CHECKS=0;"))
         self._execute_cmds(sql_insert_cmds, conn, pbar=pbar)
@@ -1020,6 +1069,27 @@ class SQLCreator:
 
             if pbar is not None:
                 pbar.update(1)
+
+    def add_unique_constraint(self, table_name: str, col_names: List[str]) -> None:
+        """Add a unique constraint to a table.
+
+        Args:
+            table_name (str): [The name of the table to add the constraint to.]
+            col_names (List[str]): [The names of the columns to add the constraint to.]
+        """
+        col_names_str = ', '.join(col_names)
+        constraint_name = f"unique_cols_{table_name}"
+        if constraint_name in self.unique_constraints:
+            if not all([col_name in self.unique_constraints[constraint_name] for col_name in col_names]):
+                # This means the constraint is for the same table but different columns
+                # Drop the old constraint
+                LOGGER.warning(f"Dropping old constraint: {constraint_name}")
+                self.unique_constraints.pop(constraint_name)
+                self.sql_table_creation_cmds.add(f"ALTER TABLE {table_name} DROP CONSTRAINT IF EXISTS {constraint_name};")
+
+        if constraint_name not in self.unique_constraints:
+            self.sql_table_creation_cmds.add(f"ALTER TABLE {table_name} ADD CONSTRAINT {constraint_name}"
+                                             f" UNIQUE ({col_names_str});")
 
 
 def doc_val_same_as_filter_val(document_value: Any, filter_value: Any) -> bool:
@@ -1309,6 +1379,9 @@ def dict_to_sql(data: dict,
             sql_creator.convert_to_sql(key, doc)
             if neem_id_val is not None:
                 sql_creator.add_foreign_key('neems', key, 'neem_id', parent_col_name="_id")
+                colunm_names = list(sql_creator.data_to_insert[key].keys())
+                colunm_names.remove('ID')
+                sql_creator.add_unique_constraint(key, colunm_names)
             if pbar is not None:
                 [pb.update(1) for pb in pbar]
 
