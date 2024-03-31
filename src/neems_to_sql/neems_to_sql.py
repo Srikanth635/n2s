@@ -1,4 +1,5 @@
 import argparse
+import os
 from dataclasses import dataclass, astuple
 import logging
 import pickle
@@ -1667,41 +1668,51 @@ def parse_arguments():
 
     """
     parser = argparse.ArgumentParser()
-    parser.add_argument('--drop', '-d', action='store_true', help='Drop the tables that will be inserted first')
-    parser.add_argument('--skip_bad_triples', '-sbt', action='store_true',
-                        help='Skip triples that are missing one of subject, predicate or object')
-    parser.add_argument('--allow_increasing_sz', '-ais', action='store_true',
-                        help='Allow increasing the size of the original data type of a column')
-    parser.add_argument('--allow_text_indexing', '-ati', action='store_true',
-                        help='Allow indexing text type columns')
-    parser.add_argument('--max_null_percentage', '-mnp', default=5, type=float,
-                        help='Maximum percentage of null values allowed in a column otherwise it will be put in'
-                             ' a separate table')
-    parser.add_argument('--batch_size', '-bs', default=4, type=int, help='Batch size (number of neems per'
-                                                                         ' batch) for uploading data to the database, \
-        this is important for memory issues, if you encounter a memory problem try to reduce that number')
-    parser.add_argument('--number_of_batches', '-nb', default=0, type=int,
-                        help='Number of batches to upload the data to the database')
-    parser.add_argument('--start_batch', '-sb', default=0, type=int, help='Start uploading from this batch')
-    parser.add_argument('--dump_data_stats', '-dds', action='store_true',
-                        help='Dump the data statistics like the sizes and time taken for each operation to a file')
-    parser.add_argument('--sql_username', '-su', help='SQL username')
-    parser.add_argument('--sql_password', '-sp', help='SQL password')
-    parser.add_argument('--sql_database', '-sd', help='SQL database name')
-    parser.add_argument('--sql_host', '-sh', default="localhost", help='SQL host name')
-    parser.add_argument('--sql_uri', '-suri', type=str, default=None,
-                        help='SQL URI this replaces the other SQL arguments')
-    parser.add_argument('--mongo_username', '-mu', help='MongoDB username')
-    parser.add_argument('--mongo_password', '-mp', help='MongoDB password')
-    parser.add_argument('--mongo_database', '-md', default="neems", help='MongoDB database name')
-    parser.add_argument('--mongo_host', '-mh', default="localhost", help='MongoDB host name')
-    parser.add_argument('--mongo_port', '-mpt', default=27017, type=int, help='MongoDB port number')
-    parser.add_argument('--mongo_uri', '-muri', type=str, default=None,
-                        help='MongoDB URI this replaces the other MongoDB arguments')
-    parser.add_argument('--log_level', '-logl', default='INFO',
-                        help='Log level (DEBUG, INFO, WARNING, ERROR, CRITICAL)')
-    parser.add_argument('--neem_filters_yaml', '-nfy', type=str, default=None,
-                        help='YAML file containing the neem filters')
+    parser.add_argument("--drop", "-d", action="store_true", help="Drop all tables first")
+    parser.add_argument("--skip_bad_triples", "-sbt", action="store_true",
+                        help="Skip triples that are missing one of subject, predicate or object")
+    parser.add_argument("--allow_increasing_sz", "-ais", action="store_true",
+                        help="Allow increasing the size of the original data type of a column")
+    parser.add_argument("--allow_text_indexing", "-ati", action="store_true",
+                        help="Allow indexing text type columns")
+    parser.add_argument("--max_null_percentage", "-mnp", default=5, type=float,
+                        help="Maximum percentage of null values allowed in a column otherwise it will be put in \
+                        a separate table, Default is 5")
+    parser.add_argument("--batch_size", "-bs", default=4, type=int, help="Batch size (number of neems per\
+     batch) for uploading data to the database, this is important for memory issues, if you encounter a memory problem\
+     try to reduce that number, Default is 4")
+    parser.add_argument("--number_of_batches", "-nb", default=0, type=int,
+                        help="Number of batches to upload the data to the database,\
+                         Default is 0 which means all batches")
+    parser.add_argument("--start_batch", "-sb", default=0, type=int, help="Start uploading from this\
+     batch, Default is 0")
+    parser.add_argument("--dump_data_stats", "-dds", action="store_true",
+                        help="Dump the data statistics like the sizes and time taken for each operation to a file")
+    parser.add_argument("--sql_username", "-su", default="newuser", help="SQL username,\
+     Default is newuser")
+    parser.add_argument("--sql_password", "-sp", default="password", help="SQL password,\
+     Default is password")
+    parser.add_argument("--sql_database", "-sd", default="test", help="SQL database name,\
+     Default is test")
+    parser.add_argument("--sql_host", "-sh", default="localhost", help="SQL host name,\
+     Default is localhost")
+    parser.add_argument("--sql_uri", "-suri", type=str, default=None,
+                        help="SQL URI this replaces the other SQL arguments, Default is None")
+    parser.add_argument("--mongo_username", "-mu", help="MongoDB username")
+    parser.add_argument("--mongo_password", "-mp", help="MongoDB password")
+    parser.add_argument("--mongo_database", "-md", default="neems", help="MongoDB database name,\
+     Default is neems")
+    parser.add_argument("--mongo_host", "-mh", default="localhost", help="MongoDB host name,\
+     Default is localhost")
+    parser.add_argument("--mongo_port", "-mpt", default=27017, type=int, help="MongoDB port number,\
+     Default is 27017")
+    parser.add_argument("--mongo_uri", "-muri", type=str, default=None,
+                        help="MongoDB URI this replaces the other MongoDB arguments, Default is None")
+    parser.add_argument("--log_level", "-logl", default="INFO",
+                        help="Log level (DEBUG, INFO, WARNING, ERROR, CRITICAL), Default is INFO")
+    parser.add_argument("--neem_filters_yaml", "-nfy",
+                        default=os.path.join(os.getcwd(), "../my_neem_filters.yaml"), type=str,
+                        help="YAML file containing the neem filters, Default is ../my_neem_filters.yaml")
     return parser.parse_args()
 
 

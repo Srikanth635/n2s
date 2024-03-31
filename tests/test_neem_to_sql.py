@@ -79,7 +79,5 @@ class TestNeemToSql(NeemToSqlTestCase):
                                                   drop_tables=True,
                                                   neem_filters=neem_filters,
                                                   skip_bad_triples=True,
-                                                  allow_increasing_sz=True,
-                                                  batch_size=4,
-                                                  number_of_batches=2
+                                                  allow_increasing_sz=True
                                                   )

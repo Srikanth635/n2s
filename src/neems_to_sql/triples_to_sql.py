@@ -151,15 +151,15 @@ class TriplesToSQL:
         urdf = Namespace("http://knowrob.org/kb/urdf.owl#")
         srdl2_cap = Namespace("http://knowrob.org/kb/srdl2-cap.owl#")
         srdl2_comp = Namespace("http://knowrob.org/kb/srdl2-comp.owl#")
-        kitchen = Namespace("http://knowrob.org/kb/IAI-kitchen.owl#")
+        iai_kitchen = Namespace("http://knowrob.org/kb/IAI-kitchen.owl#")
         pr2 = Namespace("http://knowrob.org/kb/PR2.owl#")
         iai_kitchen_knowledge = Namespace("http://knowrob.org/kb/iai-kitchen-knowledge.owl#")
         knowrob = Namespace("http://knowrob.org/kb/knowrob.owl#")
         iai_kitchen_objects = Namespace("http://knowrob.org/kb/iai-kitchen-objects.owl#")
         dcmi = Namespace("http://purl.org/dc/elements/1.1#")
-        known_ns = [OWL, RDF, RDFS, XSD, soma, dul, iolite, urdf, srdl2_cap, kitchen, pr2,
+        known_ns = [OWL, RDF, RDFS, XSD, soma, dul, iolite, urdf, srdl2_cap, iai_kitchen, pr2,
                     iai_kitchen_knowledge, knowrob, iai_kitchen_objects, srdl2_comp, dcmi]
-        known_ns_names = ['owl', 'rdf', 'rdfs', 'xsd', 'soma', 'dul', 'iolite', 'urdf', 'srdl2_cap', 'kitchen', 'pr2',
+        known_ns_names = ['owl', 'rdf', 'rdfs', 'xsd', 'soma', 'dul', 'iolite', 'urdf', 'srdl2_cap', 'iai_kitchen', 'pr2',
                           'iai_kitchen_knowledge', 'knowrob', 'iai_kitchen_objects', 'srdl2_comp', 'dcmi']
         self.ns = {knsname: kns for knsname, kns in zip(known_ns_names, known_ns)}
         self.ns_str = {knsname: str(kns) for knsname, kns in zip(known_ns_names, known_ns)}
@@ -173,6 +173,7 @@ class TriplesToSQL:
         self.g = Graph(bind_namespaces="rdflib")
         for knsname, kns in self.ns.items():
             self.g.bind(knsname, kns)
+            self.g.add((Literal(knsname), RDFS.isDefinedBy, Literal(self.ns_str[knsname])))
 
     def get_sql_type(self, val: object, property_name: Optional[str] = None) -> Tuple[str, int]:
         """Get the SQL type of a value, if this value is an output of a triple property, then the property name should be provided,
@@ -332,10 +333,18 @@ class TriplesToSQL:
                 if v_i.startswith('http') and '#' in v_i:
                     ns_name = v_i.split('#')[0].split('/')[-1].split('.owl')[0]
                     ns_iri = v_i.split('#')[0] + '#'
+                    v_i_name = v_i.split('#')[1]
+                    if '/' in v_i_name:
+                        v_i_name = v_i_name.replace('/', '_')
+                    if '_:' in v_i_name:
+                        v_i_name = v_i_name.replace('_:', '')
+                    v_i = ns_iri + v_i_name
+
                     if ns_iri not in self.ns_str.values():
                         self.ns[ns_name] = Namespace(v_i.split('#')[0] + '#')
                         self.ns_str[ns_name] = v_i.split('#')[0] + '#'
                         self.g.bind(ns_name, self.ns[ns_name])
+                        self.g.add((Literal(ns_name), RDFS.isDefinedBy, Literal(self.ns_str[ns_name])))
                 v_i = v_i.strip('<>')
                 # assert that the predicate name is correctly formatted, because it is used as a sql table name
                 if i == 1:
@@ -477,7 +486,7 @@ class TriplesToSQL:
 
 
 if __name__ == "__main__":
-    from src import json_to_sql, dict_to_sql, SQLCreator
+    from .neems_to_sql import json_to_sql, dict_to_sql, SQLCreator
     from tqdm import tqdm
 
     # Create TriplesToSQL object
@@ -508,11 +517,11 @@ if __name__ == "__main__":
     elif create_graph_from_mongo:
         # Create a graph from the mongo database
         # Replace the uri string with your MongoDB deployment's connection string.
-        MONGODB_URI = os.environ["LOCAL_MONGODB_URI"]
+        MONGODB_URI = "mongodb://localhost:27017/"
         # set a 5-second connection timeout
         client = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=5000, unicode_decode_error_handler='ignore')
         db = client.neems
-        id = '5fc8ff968f880006aa208e19'
+        id = '5fd0f191f3fc822d8e73d715'
         triples_collection = db.get_collection(id + '_triples')
         t2sql.mongo_triples_to_graph(triples_collection)
 
