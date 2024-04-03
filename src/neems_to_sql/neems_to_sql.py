@@ -419,7 +419,6 @@ class SQLCreator:
                 self.data_to_insert[key][column_name] = [v]
         else:
             self.data_to_insert[key][column_name].append(v)
-
         self.check_and_update_data_type(table_name, column_name, byte_sz, data_type)
 
     def check_and_update_data_type(self, table_name: str,
@@ -439,6 +438,8 @@ class SQLCreator:
         """
         if table_name in self.original_data_bytes:
             if column_name in self.original_data_bytes[table_name]:
+                if byte_sz is None:
+                    byte_sz = self.original_data_bytes[table_name][column_name]
                 if byte_sz > self.original_data_bytes[table_name][column_name]:
                     if not self.allow_increasing_size:
                         LOGGER.error(
@@ -459,8 +460,22 @@ class SQLCreator:
             self.data_types[table_name] = {}
         self.data_bytes[table_name][column_name] = byte_sz
         self.data_types[table_name][column_name] = data_type
-        self.sql_table_creation_cmds.add(f"ALTER TABLE {table_name} MODIFY COLUMN {column_name} {data_type};")
+        self.add_new_data_type_and_remove_previous(table_name, column_name, data_type)
         return byte_sz, data_type
+
+    def add_new_data_type_and_remove_previous(self, table_name: str, column_name: str, data_type: str) -> None:
+        """
+        Add a new data type and remove the previous one, this allows the ordered set to be updated
+         with the new data type instead of keeping the old one and not adding the new one.
+        Args:
+            table_name: The name of the table.
+            column_name: The name of the column.
+            data_type: The new data type of the column.
+        """
+        cmd = f"ALTER TABLE {table_name} MODIFY COLUMN {column_name} {data_type};"
+        if cmd in self.sql_table_creation_cmds:
+            self.sql_table_creation_cmds.remove(cmd)
+        self.sql_table_creation_cmds.add(cmd)
 
     def find_relationships(self, key: str, obj: dict or list, parent_key: Optional[str] = None) -> None:
         """Find relationships between tables and columns,
@@ -1130,7 +1145,7 @@ class SQLCreator:
             LOGGER.warning(f"Modifying column {col_name} in table {table_name} to be of type {datatype}.")
             self.data_types[table_name][col_name] = datatype
             self.data_bytes[table_name][col_name] = 255
-            self.sql_table_creation_cmds.add(f"ALTER TABLE {table_name} MODIFY COLUMN {col_name} {datatype};")
+            self.add_new_data_type_and_remove_previous(table_name, col_name, datatype)
 
 
 def doc_val_same_as_filter_val(document_value: Any, filter_value: Any) -> bool:
@@ -1422,9 +1437,6 @@ def dict_to_sql(data: dict,
                 [pb.update(1) for pb in pbar]
         if neem_id_val is not None:
             sql_creator.add_foreign_key('neems', key, 'neem_id', parent_col_name="_id")
-            colunm_names = list(sql_creator.data_to_insert[key].keys())
-            colunm_names.remove('ID')
-            sql_creator.add_unique_constraint(key, colunm_names)
 
 
 def index_predicate_tables(sql_creator: SQLCreator, use_pbar: Optional[bool] = True) -> Tuple[int, float]:
@@ -1619,6 +1631,24 @@ def drop_all_tables(engine: Engine):
         conn.close()
 
 
+def add_unique_constraints_to_predicate_tables(docs: Dict, sql_creator: SQLCreator,
+                                               pbar: Optional[tqdm] = None) -> None:
+    """
+    Add unique constraints to the tables.
+    Args:
+        docs: The dictionary of mongo documents.
+        sql_creator: The SQLCreator object.
+        pbar: The progress bar.
+    """
+    for table_name, doc in docs.items():
+        if table_name in sql_creator.data_to_insert:
+            colunm_names = list(sql_creator.data_to_insert[table_name].keys())
+            colunm_names.remove('ID')
+            sql_creator.add_unique_constraint(table_name, colunm_names)
+        if pbar is not None:
+            pbar.update(1)
+
+
 def get_mongo_neems_and_put_into_sql_database(engine: Engine, client: MongoClient,
                                               drop_tables: Optional[bool] = False,
                                               allow_increasing_sz: Optional[bool] = False,
@@ -1708,7 +1738,7 @@ def get_mongo_neems_and_put_into_sql_database(engine: Engine, client: MongoClien
                 if cname in ['annotations', 'triples']:
                     t2sql.mongo_triples_to_graph(lod, skip=skip_bad_triples)
                     lod = t2sql.graph_to_dict()
-                    sz = sum([len(v) for v in lod.values()])
+                    sz = sum([len(v) for v in lod.values()]) + len(lod)
                 else:
                     sz = len(lod)
                 all_docs += sz
@@ -1738,6 +1768,14 @@ def get_mongo_neems_and_put_into_sql_database(engine: Engine, client: MongoClien
                 total_triples_creation_time += neem_pbar.format_dict['elapsed']
             neem_pbar.close()
             data_times[coll['name']].append(neem_pbar.format_dict['elapsed'])
+
+        for coll_i, (cname, coll) in enumerate(collections.items()):
+            if len(coll['data']) == 0:
+                continue
+            if coll['name'] in ['annotations', 'triples']:
+                add_unique_constraints_to_predicate_tables(coll['data'],
+                                                           predicate_sql_creator,
+                                                           pbar=all_neems_pbar)
         total_creation_time += all_neems_pbar.format_dict['elapsed']
         all_neems_pbar.close()
 
