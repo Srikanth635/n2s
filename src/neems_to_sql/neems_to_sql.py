@@ -16,8 +16,8 @@ from bson.objectid import ObjectId
 from orderedset import OrderedSet
 from pymongo import MongoClient
 from pymongo.collection import Collection
-from sqlalchemy import Engine, Connection
 from sqlalchemy import text
+from sqlalchemy.engine import Engine, Connection
 from sqlalchemy.exc import SQLAlchemyError
 from tqdm import tqdm
 from typing_extensions import Optional, Callable, Tuple, List, Dict, Union, Any
@@ -313,7 +313,7 @@ def get_max_id_from_sql(engine: Engine, table_name: str, col_name: Optional[str]
 class SQLCreator:
     def __init__(self, engine: Engine,
                  value_mapping_func: Optional[Callable[[object, Optional[str]], object]] = None,
-                 allowed_missing_percentage: Optional[int] = 5,
+                 allowed_missing_percentage: Optional[int] = 0.1,
                  tosql_func: Optional[Callable[[object, str], Tuple[str, int]]] = None,
                  allow_increasing_size: Optional[bool] = False,
                  allow_text_indexing: Optional[bool] = False) -> None:
@@ -392,7 +392,12 @@ class SQLCreator:
         _id = True if column_name in ['_id', 'neem_id'] else False
         data_type, byte_sz = py2sql(v, _id=_id, type2sql_func=self.tosql_func, table_name=table_name,
                                     column_name=column_name)
+        if data_type is None:
+            LOGGER.error(f"UNKOWN DATA TYPE {type(v)} of VALUE {v}, COLUMN {column_name} in TABLE {table_name}")
+            raise ValueError(f"UNKOWN DATA TYPE {type(v)} of VALUE {v}, COLUMN {column_name} in TABLE {table_name}")
+
         data_type = str(data_type)
+
         # Insertion
         key = table_name
         v = 'NULL' if v is None else v
@@ -401,48 +406,61 @@ class SQLCreator:
             column_name = '_id'
         if column_name not in self.data_to_insert[key].keys():
             null, unique = True, False
-            if data_type is not None:
-                if _id:
-                    null = False
-                    if column_name == '_id' and key == 'neems':
-                        unique = True
+            if _id:
+                null = False
+                if column_name == '_id' and key == 'neems':
+                    unique = True
             self.add_column(key, column_name, data_type, ISNULL=null, ISUNIQUE=unique)
-            if key not in self.data_types.keys():
-                self.data_types[key] = {}
-            self.data_types[key][column_name] = data_type
             if null_prev_rows:
                 # The NULL values here are for previous rows that did not have a value for this column
                 n_rows = len(self.data_to_insert[key]['ID']) - 1
                 self.data_to_insert[key][column_name] = ['NULL'] * n_rows + [v]
             else:
                 self.data_to_insert[key][column_name] = [v]
-            if key not in self.data_bytes.keys():
-                self.data_bytes[key] = {}
-            self.data_bytes[key][column_name] = byte_sz
         else:
             self.data_to_insert[key][column_name].append(v)
-            if byte_sz is not None:
-                if self.data_bytes[key][column_name] is None:
-                    self.data_bytes[key][column_name] = byte_sz
-                    self.data_types[key][column_name] = data_type
-                    self.sql_table_creation_cmds.add(f"ALTER TABLE {key} MODIFY COLUMN {column_name} {data_type};")
-                elif byte_sz > self.data_bytes[key][column_name]:
-                    if key in self.original_data_bytes:
-                        if column_name in self.original_data_bytes[key]:
-                            if byte_sz > self.original_data_bytes[key][column_name]:
-                                if not self.allow_increasing_size:
-                                    LOGGER.error(
-                                        f"{key}.{column_name} has increased size:"
-                                        f" {self.original_data_bytes[key][column_name]} and {byte_sz}\
-                                                and allow_increasing_size argument is False")
-                                    raise ValueError()
-                                else:
-                                    LOGGER.warning(
-                                        f"{key}.{column_name} has increased size:"
-                                        f" {self.original_data_bytes[key][column_name]} and {byte_sz}")
-                    self.data_bytes[key][column_name] = byte_sz
-                    self.data_types[key][column_name] = data_type
-                    self.sql_table_creation_cmds.add(f"ALTER TABLE {key} MODIFY COLUMN {column_name} {data_type};")
+
+        self.check_and_update_data_type(table_name, column_name, byte_sz, data_type)
+
+    def check_and_update_data_type(self, table_name: str,
+                                   column_name: str,
+                                   byte_sz: int,
+                                   data_type: str) -> Tuple[int, str]:
+        """
+        Change the data-type of a column.
+        Args:
+            table_name: The name of the table.
+            column_name: The name of the column.
+            byte_sz: The size of the column in bytes.
+            data_type: The new data type of the column.
+
+        Returns:
+
+        """
+        if table_name in self.original_data_bytes:
+            if column_name in self.original_data_bytes[table_name]:
+                if byte_sz > self.original_data_bytes[table_name][column_name]:
+                    if not self.allow_increasing_size:
+                        LOGGER.error(
+                            f"{table_name}.{column_name} has increased size:"
+                            f" {self.original_data_bytes[table_name][column_name]} and {byte_sz}\
+                                    and allow_increasing_size argument is False")
+                        raise ValueError()
+                    else:
+                        LOGGER.warning(
+                            f"{table_name}.{column_name} has increased size:"
+                            f" {self.original_data_bytes[table_name][column_name]} and {byte_sz}")
+                else:
+                    data_type = self.original_data_types[table_name][column_name]
+                    byte_sz = self.original_data_bytes[table_name][column_name]
+        if table_name not in self.data_bytes.keys():
+            self.data_bytes[table_name] = {}
+        if table_name not in self.data_types.keys():
+            self.data_types[table_name] = {}
+        self.data_bytes[table_name][column_name] = byte_sz
+        self.data_types[table_name][column_name] = data_type
+        self.sql_table_creation_cmds.add(f"ALTER TABLE {table_name} MODIFY COLUMN {column_name} {data_type};")
+        return byte_sz, data_type
 
     def find_relationships(self, key: str, obj: dict or list, parent_key: Optional[str] = None) -> None:
         """Find relationships between tables and columns,
@@ -642,7 +660,7 @@ class SQLCreator:
                     return obj, type(obj), np.iterable(obj) and not isinstance(obj, str), ID
                 else:
                     ID = len(rows_list) + 1 + latest_id
-                LOGGER.debug("Time to check if all values exist: ", time() - start)
+                LOGGER.debug(f"Time to check if all values exist: {time() - start}")
             elif ID is None:
                 ID = len(self.data_to_insert[table_name]['ID']) + 1 + latest_id
 
@@ -861,8 +879,9 @@ class SQLCreator:
         if idx_name is None:
             idx_name = f"{table_name}_{column_name}_idx"
         full_text = ""
-        if 'TEXT' in self.data_types[table_name][column_name] or 'BLOB' in self.data_types[table_name][column_name]:
+        if self.data_types[table_name][column_name] in ['TEXT', 'BLOB']:
             if self.allow_text_indexing:
+                self.limit_column_size(table_name, column_name)
                 full_text = "FULLTEXT "
             else:
                 LOGGER.warning(
@@ -1077,19 +1096,41 @@ class SQLCreator:
             table_name (str): [The name of the table to add the constraint to.]
             col_names (List[str]): [The names of the columns to add the constraint to.]
         """
-        col_names_str = ', '.join(col_names)
         constraint_name = f"unique_cols_{table_name}"
         if constraint_name in self.unique_constraints:
-            if not all([col_name in self.unique_constraints[constraint_name] for col_name in col_names]):
-                # This means the constraint is for the same table but different columns
-                # Drop the old constraint
-                LOGGER.warning(f"Dropping old constraint: {constraint_name}")
-                self.unique_constraints.pop(constraint_name)
-                self.sql_table_creation_cmds.add(f"ALTER TABLE {table_name} DROP CONSTRAINT IF EXISTS {constraint_name};")
+            # This means the constraint is for the same table but different columns
+            # Drop the old constraint
+            LOGGER.warning(f"Dropping old constraint: {constraint_name}")
+            self.unique_constraints.pop(constraint_name)
+            self.sql_table_creation_cmds.add(f"ALTER TABLE {table_name} DROP CONSTRAINT IF EXISTS"
+                                             f" {constraint_name};")
 
-        if constraint_name not in self.unique_constraints:
+        else:
+            new_col_names = col_names.copy()
+            for col in col_names:
+                datatype = self.data_types[table_name][col]
+                if datatype in ['TEXT', 'BLOB']:
+                    new_col_names.remove(col)
+            col_names_str = ', '.join(new_col_names)
+            LOGGER.debug(f"Adding unique constraint: {constraint_name}, {col_names_str}, {table_name},"
+                         f" {self.data_types[table_name]}")
             self.sql_table_creation_cmds.add(f"ALTER TABLE {table_name} ADD CONSTRAINT {constraint_name}"
                                              f" UNIQUE ({col_names_str});")
+
+    def limit_column_size(self, table_name: str, col_name: str) -> None:
+        """
+        Limit the size of the column in the table to the size limit.
+        Args:
+            table_name: The name of the table.
+            col_name: The name of the column.
+        """
+        datatype = self.data_types[table_name][col_name]
+        if datatype in ['TEXT', 'BLOB']:
+            datatype = datatype.replace('TEXT', f'VARCHAR(255)').replace('BLOB', f'VARCHAR(255)')
+            LOGGER.warning(f"Modifying column {col_name} in table {table_name} to be of type {datatype}.")
+            self.data_types[table_name][col_name] = datatype
+            self.data_bytes[table_name][col_name] = 255
+            self.sql_table_creation_cmds.add(f"ALTER TABLE {table_name} MODIFY COLUMN {col_name} {datatype};")
 
 
 def doc_val_same_as_filter_val(document_value: Any, filter_value: Any) -> bool:
@@ -1181,7 +1222,7 @@ def select_collections_inside_the_requested_batches(collection: List[Dict],
     Returns:
         The filtered collection after removing collections outside the requested batches.
     """
-    last_collection_idx = min(start_batch * batch_size + number_of_batches * batch_size, len(collection))
+    last_collection_idx = min((start_batch + number_of_batches) * batch_size, len(collection))
     return collection[start_batch * batch_size: last_collection_idx]
 
 
@@ -1358,7 +1399,7 @@ def json_to_sql(top_table_name: str,
 
 def dict_to_sql(data: dict,
                 sql_creator: SQLCreator,
-                neem_id: Optional[ObjectId] = None,
+                neem_id: Optional[Union[ObjectId, str]] = None,
                 pbar: Optional[List[tqdm]] = None) -> None:
     """Convert a dictionary into a SQL table .
 
@@ -1377,13 +1418,13 @@ def dict_to_sql(data: dict,
             if neem_id_val is not None:
                 doc['neem_id'] = neem_id_val
             sql_creator.convert_to_sql(key, doc)
-            if neem_id_val is not None:
-                sql_creator.add_foreign_key('neems', key, 'neem_id', parent_col_name="_id")
-                colunm_names = list(sql_creator.data_to_insert[key].keys())
-                colunm_names.remove('ID')
-                sql_creator.add_unique_constraint(key, colunm_names)
             if pbar is not None:
                 [pb.update(1) for pb in pbar]
+        if neem_id_val is not None:
+            sql_creator.add_foreign_key('neems', key, 'neem_id', parent_col_name="_id")
+            colunm_names = list(sql_creator.data_to_insert[key].keys())
+            colunm_names.remove('ID')
+            sql_creator.add_unique_constraint(key, colunm_names)
 
 
 def index_predicate_tables(sql_creator: SQLCreator, use_pbar: Optional[bool] = True) -> Tuple[int, float]:
@@ -1605,18 +1646,9 @@ def get_mongo_neems_and_put_into_sql_database(engine: Engine, client: MongoClien
                                        allowed_missing_percentage=max_null_percentage)
 
     # Adding meta data
-    meta = db.meta
-    meta_lod = mongo_collection_to_list_of_dicts(meta)
-    number_of_batches = number_of_batches if number_of_batches > 0 else (
-        int(ceil(len(meta_lod) / batch_size) - start_batch))
-    meta_lod = neem_collection_to_sql("neems",
-                                      meta_lod,
-                                      sql_creator=sql_creator,
-                                      neem_filters=neem_filters,
-                                      start_batch=start_batch,
-                                      batch_size=batch_size,
-                                      number_of_batches=number_of_batches)
-    meta_lod = list(reversed(meta_lod))
+    meta_lod = read_and_convert_neem_meta_data_to_sql(db, sql_creator, neem_filters, number_of_batches, batch_size,
+                                                      start_batch)
+
     if len(meta_lod) == 0:
         LOGGER.error("NO NEEMS FOUND (Probably no meta data collection OR no neems with the given filters)")
         raise ValueError("NO NEEMS FOUND (Probably no meta data collection OR no neems with the given filters)")
@@ -1732,6 +1764,40 @@ def get_mongo_neems_and_put_into_sql_database(engine: Engine, client: MongoClien
     if dump_data_stats:
         with open('data_stats.pickle', 'wb') as f:
             pickle.dump(data_stats, f, protocol=pickle.HIGHEST_PROTOCOL)
+
+
+def read_and_convert_neem_meta_data_to_sql(db: MongoClient,
+                                           sql_creator: SQLCreator,
+                                           neem_filters: Optional[Dict] = None,
+                                           number_of_batches: Optional[int] = 1,
+                                           batch_size: Optional[int] = 1,
+                                           start_batch: Optional[int] = 0) -> List[Dict]:
+    """
+    Read and convert the neem metadata to SQL.
+    Args:
+        db: The MongoDB Client.
+        sql_creator: The SQL creator object.
+        neem_filters: The neem metadata filters.
+        number_of_batches: The number of batches.
+        batch_size: The batch size in number of neems.
+        start_batch: The start batch index.
+
+    Returns:
+        The list of neem metadata.
+    """
+    meta = db.meta
+    meta_lod = mongo_collection_to_list_of_dicts(meta)
+    number_of_batches = number_of_batches if number_of_batches > 0 else (
+        int(ceil(len(meta_lod) / batch_size) - start_batch))
+    meta_lod = neem_collection_to_sql("neems",
+                                      meta_lod,
+                                      sql_creator=sql_creator,
+                                      neem_filters=neem_filters,
+                                      start_batch=start_batch,
+                                      batch_size=batch_size,
+                                      number_of_batches=number_of_batches)
+    meta_lod = list(reversed(meta_lod))
+    return meta_lod
 
 
 def parse_arguments():

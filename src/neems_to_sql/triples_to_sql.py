@@ -11,7 +11,8 @@ from pymongo import MongoClient
 from pymongo.collection import Collection
 from rdflib import Graph, URIRef, RDF, RDFS, OWL, Literal, Namespace, XSD
 from rdflib.graph import _PredicateType
-from sqlalchemy import create_engine, Engine
+from sqlalchemy.engine import Engine
+from sqlalchemy import create_engine
 from sqlalchemy import text
 
 xsd2py = {XSD.integer: int, XSD.float: float, XSD.double: float, XSD.boolean: bool, XSD.dateTime: datetime,

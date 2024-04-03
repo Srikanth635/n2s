@@ -4,7 +4,8 @@ from pymongo import MongoClient
 
 from neems_to_sql import connect_to_mongo_and_get_client, get_mongo_neems_and_put_into_sql_database, \
     get_sql_uri, set_logging_level
-from sqlalchemy import create_engine, Engine
+from sqlalchemy import create_engine
+from sqlalchemy.engine import Engine
 from sqlalchemy.orm import registry, Session
 
 
@@ -29,7 +30,7 @@ class NeemToSqlTestCase(TestCase):
         MONGODB_URI = "mongodb://localhost:27017/neems"
         cls.mongo_client = connect_to_mongo_and_get_client(MONGODB_URI)
         sql_uri = get_sql_uri("newuser", "password", "localhost", "test")
-        cls.engine = create_engine(sql_uri)
+        cls.engine = create_engine(sql_uri, future=True)
         cls.session = Session(cls.engine)
         registry().metadata.create_all(cls.engine)
         set_logging_level("DEBUG")
@@ -58,18 +59,28 @@ class TestNeemToSql(NeemToSqlTestCase):
 
     def test_one_batch(self):
         get_mongo_neems_and_put_into_sql_database(self.engine, self.mongo_client,
+                                                  number_of_batches=1, batch_size=4,
+                                                  start_batch=3,
+                                                  neem_filters={'visibility': True},
+                                                  drop_tables=True)
+
+    def test_one_batch_drop(self):
+        get_mongo_neems_and_put_into_sql_database(self.engine, self.mongo_client,
                                                   number_of_batches=1, batch_size=2,
-                                                  start_batch=0)
+                                                  start_batch=0,
+                                                  drop_tables=True)
 
     def test_with_drop(self):
         get_mongo_neems_and_put_into_sql_database(self.engine, self.mongo_client,
-                                                  drop_tables=True,
+                                                  neem_filters={'visibility': True}
+                                                  , drop_tables=True,
                                                   number_of_batches=1,
                                                   batch_size=1,
                                                   start_batch=0)
         self.mongo_client = connect_to_mongo_and_get_client("mongodb://localhost:27017/neems")
         get_mongo_neems_and_put_into_sql_database(self.engine, self.mongo_client,
-                                                  number_of_batches=1,
+                                                  neem_filters={'visibility': True}
+                                                  , number_of_batches=1,
                                                   batch_size=1,
                                                   start_batch=1)
 

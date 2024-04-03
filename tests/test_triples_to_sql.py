@@ -1,12 +1,14 @@
 import os
+from unittest import TestCase
 
 from pymongo import MongoClient
 from rdflib import RDFS
-from sqlalchemy import Engine, create_engine
+from sqlalchemy import create_engine
+from sqlalchemy.engine import Engine, URL
+from typing_extensions import Optional
 
-import neems_to_sql.neems_to_sql as n2sql
-from neems_to_sql import TriplesToSQL, SQLCreator
-from unittest import TestCase
+from neems_to_sql import TriplesToSQL, SQLCreator, read_and_convert_neem_meta_data_to_sql, drop_all_tables, \
+    create_database_if_not_exists_and_use_it, dict_to_sql, get_value_from_sql
 
 
 class TestNeemsToSql(TestCase):
@@ -31,16 +33,17 @@ class TestNeemsToSql(TestCase):
         cls.path = os.path.join(os.path.dirname(__file__), '../neems')
         read_sql_uri = "mysql+pymysql://newuser:password@localhost/test"
         write_sql_uri = "mysql+pymysql://newuser:password@localhost/"
-        cls.read_engine = create_engine(read_sql_uri)
-        cls.write_engine = create_engine(write_sql_uri)
-        n2sql.create_database_if_not_exists_and_use_it(cls.write_engine, 'tests')
+        cls.read_engine = create_engine(read_sql_uri, future=True)
+        cls.write_engine = create_engine(write_sql_uri, future=True)
+        create_database_if_not_exists_and_use_it(cls.write_engine, 'tests')
+        cls.write_engine = create_engine(write_sql_uri+'tests', future=True)
         cls.sql_creator = SQLCreator(cls.read_engine, tosql_func=cls.t2sql.get_sql_type)
         cls.neem_id = '5fd0f191f3fc822d8e73d715'
 
     @classmethod
     def tearDownClass(cls):
         # Delete the database
-        n2sql.delete_database_if_exists(cls.write_engine, 'tests')
+        # delete_database_if_exists(cls.write_engine, 'tests')
         cls.read_engine.dispose()
         cls.write_engine.dispose()
 
@@ -66,18 +69,30 @@ class TestNeemsToSql(TestCase):
         self.assertTrue({'s': 'dul:Action_IKMZVXGQ', 'o': 'dul:Action'} in predicate_dict['rdf_type'])
 
     def test_convert_dict_to_sql(self):
-        self.create_graph_from_mongo()
-        predicate_dict = self.t2sql.graph_to_dict()
-        n2sql.dict_to_sql(predicate_dict, self.sql_creator, neem_id=self.neem_id)
+        drop_all_tables(self.write_engine)
         self.sql_creator.engine = self.write_engine
+        meta_lod = read_and_convert_neem_meta_data_to_sql(self.mongo_db,
+                                                          self.sql_creator
+                                                          # ,neem_filters={'_id': cls.neem_id}
+                                                          , neem_filters={'visibility': True}
+                                                          , batch_size=4
+                                                          , number_of_batches=0
+                                                          )
+        print(meta_lod)
+        for i in range(len(meta_lod)):
+            neem_id = meta_lod[i]['_id']
+            self.create_graph_from_mongo(neem_id)
+            predicate_dict = self.t2sql.graph_to_dict()
+            dict_to_sql(predicate_dict, self.sql_creator, neem_id=neem_id)
         self.sql_creator.upload_data_to_sql(drop_tables=True)
-        col_vals = n2sql.get_value_from_sql('rdfs_isDefinedBy',
-                                            self.write_engine, col_name='o'
-                                            , col_value_pairs={'s': 'soma'})
+        col_vals = get_value_from_sql('rdfs_isDefinedBy',
+                                      self.write_engine, col_name='o'
+                                      , col_value_pairs={'rdfs_Resource_s': 'soma'})
         self.assertTrue(len(col_vals) > 0)
         self.assertTrue(self.t2sql.ns_str['soma'] in col_vals)
         self.assertTrue(col_vals.count(self.t2sql.ns_str['soma']) == 1)
 
-    def create_graph_from_mongo(self):
-        triples_collection = self.mongo_db.get_collection(self.neem_id + '_triples')
+    def create_graph_from_mongo(self, neem_id: Optional[str] = None):
+        id_ = neem_id if neem_id is not None else self.neem_id
+        triples_collection = self.mongo_db.get_collection(str(id_) + '_triples')
         self.t2sql.mongo_triples_to_graph(triples_collection)
