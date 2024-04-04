@@ -37,7 +37,7 @@ class MetaData:
     data_bytes: Dict[str, Dict[str, int]]
     max_ids: Dict[str, int]
     constraints: Dict[str, List[Tuple[str, str, str]]]
-    unique_constraints: Dict[str, List[str]]
+    unique_constraints: Dict[str, Dict[str, List[str]]]
 
 
 def sql_type_to_byte_size(sql_type: str) -> int:
@@ -123,7 +123,7 @@ def py2sql(val: object,
     if val_type is None:
         return None, None
     elif _id:
-        return 'VARCHAR(24)', None
+        return 'VARCHAR(24)', 24
     elif type2sql_func is not None:
         return type2sql_func(val, table_name + '.' + column_name)
     else:
@@ -258,15 +258,16 @@ def get_key_constraints(engine: Engine) -> dict:
     return constraints
 
 
-def get_unique_constraints_from_database(engine: Engine) -> Dict[str, List[str]]:
-    """Get the unique constraints from the database
+def get_unique_constraints_from_database(engine: Engine) -> Dict[str, Dict[str, List[str]]]:
+    """Get the unique constraints in each table from the database
     Args:
         engine ([Engine]): [sqlalchemy engine]
     Returns:
-        [list]: [list of constraints]
+        [Dict]: [Dictionary of unique constraints that columns, the dictionary is indexed by table name and then by
+         the constraint name]
     """
     sql_query = f"""
-    SELECT CONSTRAINT_NAME, COLUMN_NAME
+    SELECT TABLE_NAME, CONSTRAINT_NAME, COLUMN_NAME 
     FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
     WHERE TABLE_SCHEMA = '{engine.url.database}'
     AND CONSTRAINT_NAME != 'PRIMARY';
@@ -275,11 +276,16 @@ def get_unique_constraints_from_database(engine: Engine) -> Dict[str, List[str]]
     with engine.connect() as conn:
         result = conn.execute(text(sql_query))
         if result.rowcount == 0:
-            LOGGER.debug("No constraints data found")
+            LOGGER.debug("No unique constraints found in the database")
         for row in result:
-            if row[0] not in constraints:
-                constraints[row[0]] = []
-            constraints[row[0]].append(row[1])
+            table_name = row[0]
+            constraint_name = row[1]
+            column_name = row[2]
+            if table_name not in constraints:
+                constraints[table_name] = {}
+            if constraint_name not in constraints[table_name]:
+                constraints[table_name][constraint_name] = []
+            constraints[table_name][constraint_name].append(column_name)
     return constraints
 
 
@@ -311,6 +317,8 @@ def get_max_id_from_sql(engine: Engine, table_name: str, col_name: Optional[str]
 
 
 class SQLCreator:
+    unique_constraints_prefix: Optional[str] = "unique_cols_"
+
     def __init__(self, engine: Engine,
                  value_mapping_func: Optional[Callable[[object, Optional[str]], object]] = None,
                  allowed_missing_percentage: Optional[int] = 0.1,
@@ -399,11 +407,14 @@ class SQLCreator:
         data_type = str(data_type)
 
         # Insertion
+
         key = table_name
         v = 'NULL' if v is None else v
         v = -1 if v == float('inf') else v
+
         if column_name == 'id':
             column_name = '_id'
+
         if column_name not in self.data_to_insert[key].keys():
             null, unique = True, False
             if _id:
@@ -419,6 +430,7 @@ class SQLCreator:
                 self.data_to_insert[key][column_name] = [v]
         else:
             self.data_to_insert[key][column_name].append(v)
+
         self.check_and_update_data_type(table_name, column_name, byte_sz, data_type)
 
     def check_and_update_data_type(self, table_name: str,
@@ -434,36 +446,33 @@ class SQLCreator:
             data_type: The new data type of the column.
 
         Returns:
-
+            The new byte size and data type of the column.
         """
-        if table_name in self.original_data_bytes:
-            if column_name in self.original_data_bytes[table_name]:
-                if byte_sz is None:
-                    byte_sz = self.original_data_bytes[table_name][column_name]
-                if byte_sz > self.original_data_bytes[table_name][column_name]:
-                    if not self.allow_increasing_size:
-                        LOGGER.error(
-                            f"{table_name}.{column_name} has increased size:"
-                            f" {self.original_data_bytes[table_name][column_name]} and {byte_sz}\
-                                    and allow_increasing_size argument is False")
-                        raise ValueError()
-                    else:
-                        LOGGER.warning(
-                            f"{table_name}.{column_name} has increased size:"
-                            f" {self.original_data_bytes[table_name][column_name]} and {byte_sz}")
-                else:
-                    data_type = self.original_data_types[table_name][column_name]
-                    byte_sz = self.original_data_bytes[table_name][column_name]
-        if table_name not in self.data_bytes.keys():
-            self.data_bytes[table_name] = {}
-        if table_name not in self.data_types.keys():
-            self.data_types[table_name] = {}
-        self.data_bytes[table_name][column_name] = byte_sz
-        self.data_types[table_name][column_name] = data_type
-        self.add_new_data_type_and_remove_previous(table_name, column_name, data_type)
+
+        try:
+            original_byte_sz = self.data_bytes[table_name][column_name]
+            original_data_type = self.data_types[table_name][column_name]
+        except KeyError:
+            try:
+                original_byte_sz = self.original_data_bytes[table_name][column_name]
+                original_data_type = self.original_data_types[table_name][column_name]
+            except KeyError:
+                # If the column is not in the database, then add the new data type directly no need to compare.
+                self.update_column_data_type(table_name, column_name, data_type, byte_sz)
+                return byte_sz, data_type
+
+        # If the new data type is bigger than the original data type, then the column has to be modified.
+        if byte_sz > original_byte_sz:
+            self.handle_column_size_increase(table_name, column_name, data_type, original_data_type, original_byte_sz)
+        else:
+            data_type = original_data_type
+            byte_sz = original_byte_sz
+
+        self.update_column_data_type(table_name, column_name, data_type, byte_sz)
+
         return byte_sz, data_type
 
-    def add_new_data_type_and_remove_previous(self, table_name: str, column_name: str, data_type: str) -> None:
+    def modify_column_with_new_datatype(self, table_name: str, column_name: str, data_type: str) -> None:
         """
         Add a new data type and remove the previous one, this allows the ordered set to be updated
          with the new data type instead of keeping the old one and not adding the new one.
@@ -894,7 +903,7 @@ class SQLCreator:
         if idx_name is None:
             idx_name = f"{table_name}_{column_name}_idx"
         full_text = ""
-        if self.data_types[table_name][column_name] in ['TEXT', 'BLOB']:
+        if any(dtype in self.data_types[table_name][column_name] for dtype in ['TEXT', 'BLOB']):
             if self.allow_text_indexing:
                 self.limit_column_size(table_name, column_name)
                 full_text = "FULLTEXT "
@@ -1111,26 +1120,28 @@ class SQLCreator:
             table_name (str): [The name of the table to add the constraint to.]
             col_names (List[str]): [The names of the columns to add the constraint to.]
         """
-        constraint_name = f"unique_cols_{table_name}"
-        if constraint_name in self.unique_constraints:
-            # This means the constraint is for the same table but different columns
-            # Drop the old constraint
-            LOGGER.warning(f"Dropping old constraint: {constraint_name}")
-            self.unique_constraints.pop(constraint_name)
-            self.sql_table_creation_cmds.add(f"ALTER TABLE {table_name} DROP CONSTRAINT IF EXISTS"
-                                             f" {constraint_name};")
+        constraint_name = self.get_unique_constraint_name(table_name)
 
-        else:
-            new_col_names = col_names.copy()
-            for col in col_names:
-                datatype = self.data_types[table_name][col]
-                if datatype in ['TEXT', 'BLOB']:
-                    new_col_names.remove(col)
-            col_names_str = ', '.join(new_col_names)
-            LOGGER.debug(f"Adding unique constraint: {constraint_name}, {col_names_str}, {table_name},"
-                         f" {self.data_types[table_name]}")
-            self.sql_table_creation_cmds.add(f"ALTER TABLE {table_name} ADD CONSTRAINT {constraint_name}"
-                                             f" UNIQUE ({col_names_str});")
+        if table_name in self.unique_constraints.keys():
+            if constraint_name in self.unique_constraints[table_name].keys():
+                # No need to add the same constraint again.
+                return
+
+        # Do not add unique constraint to dynamic size columns.
+        for col in col_names:
+            datatype = self.data_types[table_name][col]
+            if any(dtype in datatype for dtype in ['TEXT', 'BLOB']):
+                return
+
+        # Add the constraint
+        if table_name not in self.unique_constraints.keys():
+            self.unique_constraints[table_name] = {}
+        self.unique_constraints[table_name][constraint_name] = col_names
+        col_names_str = ', '.join(col_names)
+        LOGGER.debug(f"Adding unique constraint: {table_name}, {constraint_name}, {col_names_str},"
+                     f" with dtypes and columns {self.data_types[table_name]}")
+        self.sql_table_creation_cmds.add(f"ALTER TABLE {table_name} ADD CONSTRAINT {constraint_name}"
+                                         f" UNIQUE ({col_names_str});")
 
     def limit_column_size(self, table_name: str, col_name: str) -> None:
         """
@@ -1145,7 +1156,78 @@ class SQLCreator:
             LOGGER.warning(f"Modifying column {col_name} in table {table_name} to be of type {datatype}.")
             self.data_types[table_name][col_name] = datatype
             self.data_bytes[table_name][col_name] = 255
-            self.add_new_data_type_and_remove_previous(table_name, col_name, datatype)
+            self.modify_column_with_new_datatype(table_name, col_name, datatype)
+
+    def drop_unique_constraint(self, table_name: str, constraint_name: str) -> None:
+        """
+        Drop the unique constraint that is added to the table.
+        Args:
+            table_name: The name of the table.
+            constraint_name: The name of the constraint.
+        """
+        self.unique_constraints[table_name].pop(constraint_name)
+        self.sql_table_creation_cmds.add(f"ALTER TABLE {table_name} DROP CONSTRAINT IF EXISTS {constraint_name};")
+
+    def get_unique_constraint_name(self, table_name: str) -> str:
+        """
+        Get the unique constraint name for the table.
+        Args:
+            table_name: The name of the table.
+
+        Returns:
+            The unique constraint name.
+        """
+        return f"{self.unique_constraints_prefix}{table_name}"
+
+    def update_column_data_type(self, table_name: str, column_name: str, data_type: str, byte_sz: int) -> None:
+        """
+        Add a new data type to the table and modify the column with the new data type.
+        Args:
+            table_name: The name of the table.
+            column_name: The name of the column.
+            data_type: The data type of the column.
+            byte_sz: The size of the column in bytes.
+        """
+        if table_name not in self.data_bytes.keys():
+            self.data_bytes[table_name] = {}
+        if table_name not in self.data_types.keys():
+            self.data_types[table_name] = {}
+        self.data_bytes[table_name][column_name] = byte_sz
+        self.data_types[table_name][column_name] = data_type
+        self.modify_column_with_new_datatype(table_name, column_name, data_type)
+
+    def handle_column_size_increase(self, table_name: str, column_name: str, data_type: str,
+                                    original_data_type: str, original_byte_sz: int) -> None:
+        """
+        Handle the case where the column size has increased.
+        Args:
+            table_name: The name of the table.
+            column_name: The name of the column.
+            data_type: The new data type of the column.
+            original_data_type: The original data type of the column.
+            original_byte_sz: The original size of the column in bytes.
+        """
+        if self.allow_increasing_size:
+            LOGGER.info(
+                f"{table_name}.{column_name} has increased size:"
+                f" {original_data_type} and {original_byte_sz}")
+            # If the new data type belongs to dynamic size types, then it has to be verified that this
+            # column is not used in any unique constraint.
+            if any(dtype in data_type for dtype in ['TEXT', 'BLOB']):
+                # Drop the unique constraints that contain the column
+                try:
+                    for constraint in self.unique_constraints[table_name]:
+                        if column_name in self.unique_constraints[table_name][constraint]:
+                            self.drop_unique_constraint(table_name, constraint)
+                            LOGGER.warning(f"Dropping unique constraint {constraint} for "
+                                           f"{table_name}, due to the column {column_name} being of type {data_type}.")
+                except KeyError:
+                    pass
+        else:
+            err = (f"{table_name}.{column_name} has increased size: {original_data_type} and {original_byte_sz},"
+                   f" and allow_increasing_size argument is False")
+            LOGGER.error(err)
+            raise ValueError(err)
 
 
 def doc_val_same_as_filter_val(document_value: Any, filter_value: Any) -> bool:
