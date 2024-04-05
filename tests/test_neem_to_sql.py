@@ -62,12 +62,13 @@ class TestNeemToSql(NeemToSqlTestCase):
                                                   number_of_batches=1, batch_size=4,
                                                   start_batch=3,
                                                   neem_filters={'visibility': True},
-                                                  drop_tables=True)
+                                                  drop_tables=False)
 
     def test_one_batch_drop(self):
         get_mongo_neems_and_put_into_sql_database(self.engine, self.mongo_client,
-                                                  number_of_batches=1, batch_size=2,
-                                                  start_batch=0,
+                                                  number_of_batches=1, batch_size=4,
+                                                  start_batch=3,
+                                                  neem_filters={'visibility': True},
                                                   drop_tables=True)
 
     def test_with_drop(self):

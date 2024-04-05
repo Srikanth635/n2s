@@ -212,10 +212,12 @@ def get_sql_meta_data(engine: Engine) -> MetaData:
         for row in result:
             if row[0] not in table_data:
                 table_data[row[0]] = []
+                data_types[row[0]] = {}
+                data_bytes[row[0]] = {}
             if row[1] != 'ID':
                 table_data[row[0]].append(row[1])
-                data_types[row[0]] = {row[1]: row[2]}
-                data_bytes[row[0]] = {row[1]: sql_type_to_byte_size(row[2])}
+                data_types[row[0]][row[1]] = row[2]
+                data_bytes[row[0]][row[1]] = sql_type_to_byte_size(row[2])
             else:
                 max_ids[row[0]] = get_max_id_from_sql(engine, row[0])
         if result.rowcount == 0:
@@ -452,22 +454,31 @@ class SQLCreator:
         try:
             original_byte_sz = self.data_bytes[table_name][column_name]
             original_data_type = self.data_types[table_name][column_name]
+            LOGGER.debug(f"Current Column {column_name} in table {table_name} has data type {original_data_type}"
+                         f" and byte size {original_byte_sz}")
         except KeyError:
             try:
                 original_byte_sz = self.original_data_bytes[table_name][column_name]
                 original_data_type = self.original_data_types[table_name][column_name]
+                LOGGER.debug(f"Original Column {column_name} in table {table_name} has data type {original_data_type}"
+                             f" and byte size {original_byte_sz}")
             except KeyError:
                 # If the column is not in the database, then add the new data type directly no need to compare.
                 self.update_column_data_type(table_name, column_name, data_type, byte_sz)
+                LOGGER.debug(f"NOT IN DATABASE: Column {column_name} in table {table_name} will"
+                             f" have data type {data_type}")
                 return byte_sz, data_type
 
         # If the new data type is bigger than the original data type, then the column has to be modified.
         if byte_sz > original_byte_sz:
+            LOGGER.debug(f"Handle Size Increase, Column {column_name} in table {table_name} will"
+                         f" have data type {data_type} and byte size {byte_sz}")
             self.handle_column_size_increase(table_name, column_name, data_type, original_data_type, original_byte_sz)
         else:
+            LOGGER.debug(f"USING ORIGINAL: Current Column {column_name} in table {table_name} has data type"
+                         f" {original_data_type} and byte size {original_byte_sz}")
             data_type = original_data_type
             byte_sz = original_byte_sz
-
         self.update_column_data_type(table_name, column_name, data_type, byte_sz)
 
         return byte_sz, data_type
@@ -903,7 +914,7 @@ class SQLCreator:
         if idx_name is None:
             idx_name = f"{table_name}_{column_name}_idx"
         full_text = ""
-        if any(dtype in self.data_types[table_name][column_name] for dtype in ['TEXT', 'BLOB']):
+        if any(dtype in self.data_types[table_name][column_name].lower() for dtype in ['text', 'blob']):
             if self.allow_text_indexing:
                 self.limit_column_size(table_name, column_name)
                 full_text = "FULLTEXT "
@@ -1130,7 +1141,7 @@ class SQLCreator:
         # Do not add unique constraint to dynamic size columns.
         for col in col_names:
             datatype = self.data_types[table_name][col]
-            if any(dtype in datatype for dtype in ['TEXT', 'BLOB']):
+            if any(dtype in datatype.lower() for dtype in ['text', 'blob']):
                 return
 
         # Add the constraint
@@ -1151,8 +1162,8 @@ class SQLCreator:
             col_name: The name of the column.
         """
         datatype = self.data_types[table_name][col_name]
-        if datatype in ['TEXT', 'BLOB']:
-            datatype = datatype.replace('TEXT', f'VARCHAR(255)').replace('BLOB', f'VARCHAR(255)')
+        if datatype.lower() in ['text', 'blob']:
+            datatype = datatype.lower().replace('text', f'VARCHAR(255)').replace('blob', f'VARCHAR(255)')
             LOGGER.warning(f"Modifying column {col_name} in table {table_name} to be of type {datatype}.")
             self.data_types[table_name][col_name] = datatype
             self.data_bytes[table_name][col_name] = 255
