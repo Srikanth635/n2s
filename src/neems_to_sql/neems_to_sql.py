@@ -375,6 +375,11 @@ class SQLCreator:
         """
         self.sql_table_creation_cmds = OrderedSet()
         self.data_to_insert = {}
+        self.update_meta_sql_data()
+
+    def update_meta_sql_data(self) -> None:
+        """Update the meta data with the new data.
+        """
         (self.table_data, self.original_data_types, self.original_data_bytes, self.max_ids, self.key_constraints,
          self.unique_constraints) = astuple(get_sql_meta_data(self.engine))
 
@@ -633,6 +638,13 @@ class SQLCreator:
             id_col_string = f"CREATE TABLE IF NOT EXISTS {table_name} (ID INT NOT NULL AUTO_INCREMENT PRIMARY KEY);"
             self.sql_table_creation_cmds.add(id_col_string)
 
+            # Conform to the already existing tables in the database
+            if table_name in self.table_data:
+                for k, v in obj.items():
+                    if k not in self.table_data[table_name]:
+                        if table_name + '.' + k not in self.not_always_there:
+                            self.not_always_there.append(table_name + '.' + k)
+
             # Make object keys that are not always there into lists (thus making them many-to-many relationships)
             # Also, map one item lists into just the item.
             obj_cp = deepcopy(obj)
@@ -661,6 +673,9 @@ class SQLCreator:
             latest_id = 0
             if table_name in self.max_ids.keys():
                 latest_id = self.max_ids[table_name]
+                if latest_id > 0:
+                    # reset the auto increment to the latest id.
+                    self.sql_table_creation_cmds.add(f"ALTER TABLE {table_name} AUTO_INCREMENT = {latest_id + 1};")
             if parent_list:
                 if table_name in self.table_data:
                     res = get_value_from_sql(table_name, self.engine, col_value_pairs=obj)
@@ -750,6 +765,11 @@ class SQLCreator:
                 id_col_string += f");"
             self.sql_table_creation_cmds.add(id_col_string)
 
+            latest_id = self.max_ids.get(table_name, 0)
+            if latest_id > 0:
+                # reset the auto increment to the latest id.
+                self.sql_table_creation_cmds.add(f"ALTER TABLE {table_name} AUTO_INCREMENT = {latest_id + 1};")
+
             if parent_key is not None:
                 assert parent_table_name is not None
                 self.add_foreign_key(parent_table_name=parent_table_name, table_name=table_name,
@@ -767,7 +787,11 @@ class SQLCreator:
                 self.data_to_insert[table_name]['list_index'] = []
             parent_id = None
             if parent_key is not None:
-                parent_id = len(self.data_to_insert[parent_table_name]['ID'])
+                try:
+                    latest_parent_id = self.max_ids[parent_table_name]
+                except KeyError:
+                    latest_parent_id = 0
+                parent_id = len(self.data_to_insert[parent_table_name]['ID']) + latest_parent_id
             i = 1
 
             for v in obj:
@@ -867,7 +891,7 @@ class SQLCreator:
             if (col_name, parent_table_name, parent_col_name) in self.key_constraints[table_name]:
                 return
         col_string = (f"ALTER TABLE {table_name} ADD FOREIGN KEY IF NOT EXISTS ({col_name})"
-                      f" REFERENCES {parent_table_name}({parent_col_name})")
+                      f" REFERENCES {parent_table_name}({parent_col_name}) ON DELETE CASCADE;")
         self.sql_table_creation_cmds.add(col_string)
 
     def add_column(self, table_name: str, col_name: str, col_type: str,
@@ -1033,12 +1057,8 @@ class SQLCreator:
                 sql_insert_commands.append(f"INSERT IGNORE INTO {key} {cols_str} VALUES {all_rows_str};")
         return sql_insert_commands
 
-    def upload_data_to_sql(self, drop_tables: Optional[bool] = True) -> Tuple[int, float]:
+    def upload_data_to_sql(self) -> Tuple[int, float]:
         """Upload the data to the database, this will create the tables and insert the data.
-        
-        Args:
-            drop_tables (bool, optional): [If True, will drop the tables before creating them]. Defaults to True.
-
         Returns:
             [int]: [data size in number of sql commands]
             [float]: [time taken in number of seconds]
@@ -1049,9 +1069,6 @@ class SQLCreator:
 
         # Get the insertion cmds
         sql_insert_cmds = self.get_insert_rows_commands()
-
-        if drop_tables:
-            self._drop_tables(self.data_to_insert, conn)
 
         # Create tables
         LOGGER.debug(self.sql_table_creation_cmds)
@@ -1218,7 +1235,7 @@ class SQLCreator:
             original_data_type: The original data type of the column.
             original_byte_sz: The original size of the column in bytes.
         """
-        if self.allow_increasing_size:
+        if self.allow_increasing_size or original_byte_sz == self.data_bytes[table_name][column_name]:
             LOGGER.info(
                 f"{table_name}.{column_name} has increased size:"
                 f" {original_data_type} and {original_byte_sz}")
@@ -1358,7 +1375,8 @@ def filter_and_select_neems_in_batches(collection: List[Dict], engine: Engine,
                                        neem_filters: Optional[dict] = None,
                                        start_batch: Optional[int] = 0,
                                        batch_size: Optional[int] = 4,
-                                       number_of_batches: Optional[int] = -1) -> List[Dict]:
+                                       number_of_batches: Optional[int] = -1,
+                                       drop: Optional[bool] = False) -> List[Dict]:
     """Filter neem collections and select only the neems in the requested batches
 
         Args:
@@ -1372,6 +1390,7 @@ def filter_and_select_neems_in_batches(collection: List[Dict], engine: Engine,
              Defaults to 4.
             number_of_batches (int, optional): [The number of batches to put into sql]. Defaults to -1 which uses all
              neems.
+            drop (bool, optional): [If True, will drop the neems before creating them]. Defaults to False.
         Returns:
             The filtered collection of neems.
     """
@@ -1381,7 +1400,9 @@ def filter_and_select_neems_in_batches(collection: List[Dict], engine: Engine,
             LOGGER.warning("NO NEEMS FOUND THAT CONFORM TO THE GIVEN FILTERS")
             return []
 
-    collection = get_neems_not_in_sql_database(collection, engine)
+    new_collection = get_neems_not_in_sql_database(collection, engine)
+    if not (len(new_collection) == 0 and drop):
+        collection = new_collection
 
     for doc in collection:
         LOGGER.info(f"FOUND NEW NEEM: {doc['_id']}")
@@ -1390,6 +1411,12 @@ def filter_and_select_neems_in_batches(collection: List[Dict], engine: Engine,
                                                                  start_batch,
                                                                  batch_size,
                                                                  number_of_batches)
+    if drop:
+        neem_ids = []
+        for doc in collection:
+            neem_ids.append(mon2py(doc['_id']))
+        delete_neems_from_sql_database(engine, neem_ids)
+
     return collection
 
 
@@ -1398,7 +1425,8 @@ def neem_collection_to_sql(name: str, collection: List[Dict], sql_creator: SQLCr
                            neem_filters: Optional[dict] = None,
                            start_batch: Optional[int] = 0,
                            batch_size: Optional[int] = 4,
-                           number_of_batches: Optional[int] = -1) -> List[Dict]:
+                           number_of_batches: Optional[int] = -1,
+                           drop: Optional[bool] = False) -> List[Dict]:
     """Convert a collection of documents to sql commands.
     
     Args:
@@ -1413,6 +1441,7 @@ def neem_collection_to_sql(name: str, collection: List[Dict], sql_creator: SQLCr
         start_batch (int, optional): [The start batch of batches of neems to be moved to sql database]. Defaults to 0.
         batch_size (int, optional): [The size of the batch of neems (i.e. number of neems per batch)]. Defaults to 4.
         number_of_batches (int, optional): [The number of batches to put into sql]. Defaults to -1 which uses all neems.
+        drop (bool, optional): [If True, will drop the neems before creating them]. Defaults to False.
     """
 
     if is_neem_collection_empty(name, neem_id, collection):
@@ -1420,9 +1449,10 @@ def neem_collection_to_sql(name: str, collection: List[Dict], sql_creator: SQLCr
 
     if name == "neems":
         collection = filter_and_select_neems_in_batches(collection, sql_creator.engine, neem_filters, start_batch,
-                                                        batch_size, number_of_batches)
+                                                        batch_size, number_of_batches, drop)
 
     meta_sql_creator = SQLCreator(engine=sql_creator.engine)
+    sql_creator.update_meta_sql_data()
 
     if neem_id is not None:
         [doc.update({"neem_id": deepcopy(neem_id)}) for doc in collection]
@@ -1449,7 +1479,6 @@ def json_to_sql(top_table_name: str,
                 json_data: list,
                 sqlalachemy_engine: Engine,
                 filter_doc: Optional[Callable[[dict], Tuple[Optional[str], dict, str]]] = None,
-                drop_tables: Optional[bool] = True,
                 value_mapping_func: Optional[Callable[[object, Optional[str]], object]] = None,
                 pbar: Optional[tqdm] = None,
                 count_mode: Optional[bool] = False) -> Optional[int]:
@@ -1461,8 +1490,6 @@ def json_to_sql(top_table_name: str,
         sqlalachemy_engine (Engine): [The sql alchemy engine]
         filter_doc (Callable[[dict], Tuple[str, dict, str]], optional): [A function that takes a document and returns
          a tuple of the name of the table, the document, and the iri of the document]. Defaults to None.
-        drop_tables (bool, optional): [If True, will drop all tables in the database that also is in the given data].
-         Defaults to True.
         value_mapping_func (Callable[[object, Optional[str]], object], optional): [A function that takes a value and
          the name of the column and returns the value to be inserted into the database]. Defaults to None.
         pbar (tqdm, optional): [The progress bar]. Defaults to None.
@@ -1502,7 +1529,7 @@ def json_to_sql(top_table_name: str,
         return n_doc
     sql_creator.reference_to_existing_table()
     LOGGER.debug(f"number_of_json_documents = {n_doc}")
-    sql_creator.upload_data_to_sql(drop_tables=drop_tables)
+    sql_creator.upload_data_to_sql()
 
 
 def dict_to_sql(data: dict,
@@ -1663,8 +1690,7 @@ def mongo_collection_to_list_of_dicts(collection: Collection) -> List[Dict]:
 def link_and_upload(sql_creator: SQLCreator,
                     predicate_sql_creator: SQLCreator,
                     data_sizes: dict, data_times: dict,
-                    reset: Optional[bool] = False,
-                    drop: Optional[bool] = False) -> float:
+                    reset: Optional[bool] = False) -> float:
     """Index the predicate tables, Link tf and triples together, and upload the data to the database.
 
     Args:
@@ -1673,8 +1699,7 @@ def link_and_upload(sql_creator: SQLCreator,
         data_sizes (dict): [a dictionary to store the data sizes]
         data_times (dict): [a dictionary to store the data times]
         reset (Optional[bool], optional): [reset the SQLCreator objects to empty the data]. Defaults to False.
-        drop (Optional[bool], optional): [drop the tables that will be inserted first]. Defaults to False.
-    
+
     Returns:
         [float]: [the total time to upload the data]
     """
@@ -1691,7 +1716,7 @@ def link_and_upload(sql_creator: SQLCreator,
     data_times['tf_triples_linking'].append(tf_triples_linking_time)
 
     sql_creator.merge_with(predicate_sql_creator)
-    data_upload_sz, data_upload_time = sql_creator.upload_data_to_sql(drop_tables=drop)
+    data_upload_sz, data_upload_time = sql_creator.upload_data_to_sql()
     total_time += data_upload_time
     data_sizes['data_upload'].append(data_upload_sz)
     data_times['data_upload'].append(data_upload_time)
@@ -1724,6 +1749,19 @@ def drop_all_tables(engine: Engine):
         conn.close()
 
 
+def delete_neems_from_sql_database(engine: Engine, neem_ids: List[str]) -> None:
+    """
+    Delete the neems from the SQL database.
+    :param engine: The SQLAlchemy engine.
+    :param neem_ids: The ids of the neems to delete.
+    """
+    with engine.connect() as conn:
+        for neem_id in neem_ids:
+            cmd = text(f"DELETE FROM neems WHERE _id = '{neem_id}';")
+            conn.execute(cmd)
+            conn.commit()
+
+
 def add_unique_constraints_to_predicate_tables(docs: Dict, sql_creator: SQLCreator,
                                                pbar: Optional[tqdm] = None) -> None:
     """
@@ -1743,6 +1781,7 @@ def add_unique_constraints_to_predicate_tables(docs: Dict, sql_creator: SQLCreat
 
 
 def get_mongo_neems_and_put_into_sql_database(engine: Engine, client: MongoClient,
+                                              drop_neems: Optional[bool] = False,
                                               drop_tables: Optional[bool] = False,
                                               allow_increasing_sz: Optional[bool] = False,
                                               allow_text_indexing: Optional[bool] = False,
@@ -1770,7 +1809,7 @@ def get_mongo_neems_and_put_into_sql_database(engine: Engine, client: MongoClien
 
     # Adding meta data
     meta_lod = read_and_convert_neem_meta_data_to_sql(db, sql_creator, neem_filters, number_of_batches, batch_size,
-                                                      start_batch)
+                                                      start_batch, drop=drop_neems)
 
     if len(meta_lod) == 0:
         LOGGER.error("NO NEEMS FOUND (Probably no meta data collection OR no neems with the given filters)")
@@ -1872,10 +1911,8 @@ def get_mongo_neems_and_put_into_sql_database(engine: Engine, client: MongoClien
         total_creation_time += all_neems_pbar.format_dict['elapsed']
         all_neems_pbar.close()
 
-        link_and_upload_time = link_and_upload(sql_creator, predicate_sql_creator, data_sizes, data_times, reset=True,
-                                               drop=drop_tables)
+        link_and_upload_time = link_and_upload(sql_creator, predicate_sql_creator, data_sizes, data_times, reset=True)
         total_time += link_and_upload_time
-        drop_tables = False
 
     client.close()
     total_time += total_meta_time
@@ -1902,7 +1939,8 @@ def read_and_convert_neem_meta_data_to_sql(db: MongoClient,
                                            neem_filters: Optional[Dict] = None,
                                            number_of_batches: Optional[int] = 1,
                                            batch_size: Optional[int] = 1,
-                                           start_batch: Optional[int] = 0) -> List[Dict]:
+                                           start_batch: Optional[int] = 0,
+                                           drop: Optional[bool] = False) -> List[Dict]:
     """
     Read and convert the neem metadata to SQL.
     Args:
@@ -1912,6 +1950,7 @@ def read_and_convert_neem_meta_data_to_sql(db: MongoClient,
         number_of_batches: The number of batches.
         batch_size: The batch size in number of neems.
         start_batch: The start batch index.
+        drop: Drop the neems that will be uploaded to the SQL database.
 
     Returns:
         The list of neem metadata.
@@ -1926,7 +1965,8 @@ def read_and_convert_neem_meta_data_to_sql(db: MongoClient,
                                       neem_filters=neem_filters,
                                       start_batch=start_batch,
                                       batch_size=batch_size,
-                                      number_of_batches=number_of_batches)
+                                      number_of_batches=number_of_batches,
+                                      drop=drop)
     meta_lod = list(reversed(meta_lod))
     return meta_lod
 
@@ -1938,7 +1978,8 @@ def parse_arguments():
 
     """
     parser = argparse.ArgumentParser()
-    parser.add_argument("--drop", "-d", action="store_true", help="Drop all tables first")
+    parser.add_argument("--drop_neems", "-dn", action="store_true", help="Drop neems before creating them")
+    parser.add_argument("--drop_tables", "-dt", action="store_true", help="Drop all tables first")
     parser.add_argument("--skip_bad_triples", "-sbt", action="store_true",
                         help="Skip triples that are missing one of subject, predicate or object")
     parser.add_argument("--allow_increasing_sz", "-ais", action="store_true",

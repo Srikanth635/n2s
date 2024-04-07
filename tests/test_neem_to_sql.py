@@ -1,9 +1,6 @@
 from unittest import TestCase
 
-from pymongo import MongoClient
-
-from neems_to_sql import connect_to_mongo_and_get_client, get_mongo_neems_and_put_into_sql_database, \
-    get_sql_uri, set_logging_level
+from neems_to_sql import *
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import registry, Session
@@ -62,19 +59,19 @@ class TestNeemToSql(NeemToSqlTestCase):
                                                   number_of_batches=1, batch_size=4,
                                                   start_batch=3,
                                                   neem_filters={'visibility': True},
-                                                  drop_tables=False)
+                                                  drop_neems=False)
 
     def test_one_batch_drop(self):
         get_mongo_neems_and_put_into_sql_database(self.engine, self.mongo_client,
                                                   number_of_batches=1, batch_size=4,
                                                   start_batch=3,
                                                   neem_filters={'visibility': True},
-                                                  drop_tables=True)
+                                                  drop_neems=True)
 
     def test_with_drop(self):
         get_mongo_neems_and_put_into_sql_database(self.engine, self.mongo_client,
                                                   neem_filters={'visibility': True}
-                                                  , drop_tables=True,
+                                                  , drop_neems=True,
                                                   number_of_batches=1,
                                                   batch_size=1,
                                                   start_batch=0)
@@ -88,8 +85,21 @@ class TestNeemToSql(NeemToSqlTestCase):
     def test_all_batches(self):
         neem_filters = {'visibility': True}
         get_mongo_neems_and_put_into_sql_database(self.engine, self.mongo_client,
-                                                  drop_tables=True,
+                                                  drop_neems=False,
                                                   neem_filters=neem_filters,
                                                   skip_bad_triples=True,
                                                   allow_increasing_sz=True
                                                   )
+
+    def test_drop_neem(self):
+        get_mongo_neems_and_put_into_sql_database(self.engine, self.mongo_client,
+                                                  number_of_batches=1, batch_size=4,
+                                                  start_batch=3,
+                                                  neem_filters={'visibility': True},
+                                                  drop_neems=True)
+        delete_neems_from_sql_database(self.engine, neem_ids=['641064a2ba2ba183b56ca0de'])
+        # assert the neem is deleted
+        cmd = text("SELECT * FROM neems WHERE _id = '641064a2ba2ba183b56ca0de';")
+        with self.engine.connect() as conn:
+            result = conn.execute(cmd)
+            self.assertIsNone(result.fetchone())

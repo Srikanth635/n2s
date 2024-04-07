@@ -30,7 +30,8 @@ if __name__ == "__main__":
     sql_engine = create_engine(SQL_URI, future=True)
 
     get_mongo_neems_and_put_into_sql_database(sql_engine, mongo_client,
-                                              drop_tables=args.drop,
+                                              drop_neems=args.drop_neems,
+                                              drop_tables=args.drop_tables,
                                               allow_increasing_sz=args.allow_increasing_sz,
                                               allow_text_indexing=args.allow_text_indexing,
                                               max_null_percentage=args.max_null_percentage,
