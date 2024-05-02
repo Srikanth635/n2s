@@ -71,34 +71,56 @@ If all is good you should see something like this:
 For all usages of the command line see the command line arguments documentation below:
 
 ```
-usage: migrate_neems_to_sql.py [-h] [--drop] [--skip_bad_triples] [--allow_increasing_sz] [--allow_text_indexing] [--size_limit SIZE_LIMIT]
-                               [--max_null_percentage MAX_NULL_PERCENTAGE] [--batch_size BATCH_SIZE] [--number_of_batches NUMBER_OF_BATCHES] [--start_batch START_BATCH]
-                               [--dump_data_stats] [--sql_username SQL_USERNAME] [--sql_password SQL_PASSWORD] [--sql_database SQL_DATABASE] [--sql_host SQL_HOST]
-                               [--sql_uri SQL_URI] [--mongo_username MONGO_USERNAME] [--mongo_password MONGO_PASSWORD] [--mongo_database MONGO_DATABASE] [--mongo_host MONGO_HOST]
-                               [--mongo_port MONGO_PORT] [--mongo_uri MONGO_URI] [--log_level LOG_LEVEL] [--neem_filters_yaml NEEM_FILTERS_YAML]
+usage: migrate_neems_to_sql.py [-h] [--drop_neems] [--drop_tables]
+                               [--skip_bad_triples] [--allow_increasing_sz]
+                               [--allow_text_indexing]
+                               [--max_null_percentage MAX_NULL_PERCENTAGE]
+                               [--batch_size BATCH_SIZE]
+                               [--number_of_batches NUMBER_OF_BATCHES]
+                               [--start_batch START_BATCH]
+                               [--dump_data_stats]
+                               [--sql_username SQL_USERNAME]
+                               [--sql_password SQL_PASSWORD]
+                               [--sql_database SQL_DATABASE]
+                               [--sql_host SQL_HOST] [--sql_uri SQL_URI]
+                               [--mongo_username MONGO_USERNAME]
+                               [--mongo_password MONGO_PASSWORD]
+                               [--mongo_database MONGO_DATABASE]
+                               [--mongo_host MONGO_HOST]
+                               [--mongo_port MONGO_PORT]
+                               [--mongo_uri MONGO_URI]
+                               [--log_level LOG_LEVEL]
+                               [--neem_filters_yaml NEEM_FILTERS_YAML]
 
 optional arguments:
   -h, --help            show this help message and exit
-  --drop, -d            Drop all tables first
+  --drop_neems, -dn     Drop the neems to be recreated/updated before creating them
+  --drop_tables, -dt    Drop all tables first
   --skip_bad_triples, -sbt
-                        Skip triples that are missing one of subject, predicate or object
+                        Skip triples that are missing one of subject,
+                        predicate or object
   --allow_increasing_sz, -ais
-                        Allow increasing the size of the original data type of a column
+                        Allow increasing the size of the original data type
+                        of a column
   --allow_text_indexing, -ati
                         Allow indexing text type columns
-  --size_limit SIZE_LIMIT, -sl SIZE_LIMIT
-                        Size limit (in bytes) for text columns that are indexed (only used if allow_text_indexing is specified), default is 1023 bytes
   --max_null_percentage MAX_NULL_PERCENTAGE, -mnp MAX_NULL_PERCENTAGE
-                        Maximum percentage of null values allowed in a column otherwise it will be put in a separate table, Default is 5
+                        Maximum percentage of null values allowed in a column
+                        otherwise it will be put in a separate table, Default
+                        is 5
   --batch_size BATCH_SIZE, -bs BATCH_SIZE
-                        Batch size (number of neems per batch) for uploading data to the database, this is important for memory issues, if you encounter a memory problem try to
+                        Batch size (number of neems per batch) for uploading
+                        data to the database, this is important for memory
+                        issues, if you encounter a memory problem try to
                         reduce that number, Default is 4
   --number_of_batches NUMBER_OF_BATCHES, -nb NUMBER_OF_BATCHES
-                        Number of batches to upload the data to the database, Default is 0 which means all batches
+                        Number of batches to upload the data to the database,
+                        Default is 0 which means all batches
   --start_batch START_BATCH, -sb START_BATCH
                         Start uploading from this batch, Default is 0
   --dump_data_stats, -dds
-                        Dump the data statistics like the sizes and time taken for each operation to a file
+                        Dump the data statistics like the sizes and time
+                        taken for each operation to a file
   --sql_username SQL_USERNAME, -su SQL_USERNAME
                         SQL username, Default is newuser
   --sql_password SQL_PASSWORD, -sp SQL_PASSWORD
@@ -108,7 +130,8 @@ optional arguments:
   --sql_host SQL_HOST, -sh SQL_HOST
                         SQL host name, Default is localhost
   --sql_uri SQL_URI, -suri SQL_URI
-                        SQL URI this replaces the other SQL arguments, Default is None
+                        SQL URI this replaces the other SQL arguments,
+                        Default is None
   --mongo_username MONGO_USERNAME, -mu MONGO_USERNAME
                         MongoDB username
   --mongo_password MONGO_PASSWORD, -mp MONGO_PASSWORD
@@ -120,11 +143,14 @@ optional arguments:
   --mongo_port MONGO_PORT, -mpt MONGO_PORT
                         MongoDB port number, Default is 27017
   --mongo_uri MONGO_URI, -muri MONGO_URI
-                        MongoDB URI this replaces the other MongoDB arguments, Default is None
+                        MongoDB URI this replaces the other MongoDB
+                        arguments, Default is None
   --log_level LOG_LEVEL, -logl LOG_LEVEL
-                        Log level (DEBUG, INFO, WARNING, ERROR, CRITICAL), Default is INFO
+                        Log level (DEBUG, INFO, WARNING, ERROR, CRITICAL),
+                        Default is INFO
   --neem_filters_yaml NEEM_FILTERS_YAML, -nfy NEEM_FILTERS_YAML
-                        YAML file containing the neem filters, Default is ../my_neem_filters.yaml
+                        YAML file containing the neem filters, Default is
+                        ../my_neem_filters.yaml
 
 ```
 

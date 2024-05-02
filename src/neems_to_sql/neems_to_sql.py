@@ -1978,7 +1978,8 @@ def parse_arguments():
 
     """
     parser = argparse.ArgumentParser()
-    parser.add_argument("--drop_neems", "-dn", action="store_true", help="Drop neems before creating them")
+    parser.add_argument("--drop_neems", "-dn", action="store_true", help="Drop the neems to be "
+                                                                         "recreated/updated before creating them")
     parser.add_argument("--drop_tables", "-dt", action="store_true", help="Drop all tables first")
     parser.add_argument("--skip_bad_triples", "-sbt", action="store_true",
                         help="Skip triples that are missing one of subject, predicate or object")
