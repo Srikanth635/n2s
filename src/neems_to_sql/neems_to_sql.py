@@ -1994,10 +1994,10 @@ def parse_arguments():
     parser.add_argument("--drop_neems", "-dn", action="store_true", help="Drop the neems to be "
                                                                          "recreated/updated before creating them")
     parser.add_argument("--drop_tables", "-dt", action="store_true", help="Drop all tables first")
-    parser.add_argument("--skip_bad_triples", "-sbt", action="store_true",
-                        help="Skip triples that are missing one of subject, predicate or object")
-    parser.add_argument("--allow_increasing_sz", "-ais", action="store_true",
-                        help="Allow increasing the size of the original data type of a column")
+    parser.add_argument("--allow_bad_triples", "-abt", dest="skip_bad_triples", action="store_false",
+                        help="Allow triples that are missing one of subject, predicate or object", default=True)
+    parser.add_argument("--disable_increasing_sz", "-dis", dest="allow_increasing_sz", action="store_false",
+                        help="Disable increasing the size of the original data type of a column", default=True)
     parser.add_argument("--allow_text_indexing", "-ati", action="store_true",
                         help="Allow indexing text type columns")
     parser.add_argument("--max_null_percentage", "-mnp", default=5, type=float,

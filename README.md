@@ -8,14 +8,8 @@ You need to have both [MongoDB](https://www.mongodb.com/docs/manual/tutorial/ins
 
 ## Installation
 
-Clone the repository:
 ```
-git clone git@github.com:AbdelrhmanBassiouny/neem_to_sql.git
-```
-
-Go to package root directory, then do:
-```
-pip install -r requirements.txt
+pip install neem_to_sql
 ```
 
 ## Recommendations
@@ -48,16 +42,16 @@ Make sure that you have MonoDB server running:
 sudo systemctl start mongod.service
 ```
 
-The usage is straight forward, if you have your new neems on a MongoDB, and you have the credentials for access to the MongoDB and the MariaDB, then you are good to go. The only file you need to run is "migrate_neems_to_sql.py", for example the following command uses the sql database (always required), sql uri and the mongo uri instead of providing username, password, and hostname, arguments, this is for providing more flexibility:
+The usage is straight forward, if you have your new neems on a MongoDB, and you have the credentials for access to the MongoDB and the MariaDB, then you are good to go. The following command uses the sql database, sql uri and the mongo uri instead of providing username, password, and hostname, arguments, this is for providing more flexibility:
 
 ```
-python migrate_neems_to_sql.py -sbt -ais  --sql_uri "mysql+pymysql://newuser:password@localhost/test?charset=utf8mb4" --mongo_uri "mongodb://newuser:password@localhost:27017/neems"
+neems_to_sql  --sql_uri "mysql+pymysql://newuser:password@localhost/test?charset=utf8mb4" --mongo_uri "mongodb://newuser:password@localhost:27017/neems"
 ```
 
 Another way is using the specific arguments:
 
 ```
-python migrate_neems_to_sql.py -sbt -ais -su "sql_username" -sp "sql_password" -sh "localhost" -sd "my_sql_database" -mu "mongo_username" -mp "mongo_password" -md "neems" -mh "localhost" -mpt 27017
+neems_to_sql -su "sql_username" -sp "sql_password" -sh "localhost" -sd "my_sql_database" -mu "mongo_username" -mp "mongo_password" -md "neems" -mh "localhost" -mpt 27017
 ```
 
 The above commands assumes that you have an sql database called "my_sql_database" and a mongo database called "neems".
@@ -71,30 +65,26 @@ If all is good you should see something like this:
 For all usages of the command line see the command line arguments documentation below:
 
 ```
-usage: migrate_neems_to_sql.py [-h] [--drop_neems] [--drop_tables]
-                               [--skip_bad_triples] [--allow_increasing_sz]
-                               [--allow_text_indexing]
-                               [--max_null_percentage MAX_NULL_PERCENTAGE]
-                               [--batch_size BATCH_SIZE]
-                               [--number_of_batches NUMBER_OF_BATCHES]
-                               [--start_batch START_BATCH]
-                               [--dump_data_stats]
-                               [--sql_username SQL_USERNAME]
-                               [--sql_password SQL_PASSWORD]
-                               [--sql_database SQL_DATABASE]
-                               [--sql_host SQL_HOST] [--sql_uri SQL_URI]
-                               [--mongo_username MONGO_USERNAME]
-                               [--mongo_password MONGO_PASSWORD]
-                               [--mongo_database MONGO_DATABASE]
-                               [--mongo_host MONGO_HOST]
-                               [--mongo_port MONGO_PORT]
-                               [--mongo_uri MONGO_URI]
-                               [--log_level LOG_LEVEL]
-                               [--neem_filters_yaml NEEM_FILTERS_YAML]
+usage: neems_to_sql [-h] [--drop_neems] [--drop_tables] [--skip_bad_triples]
+                    [--allow_increasing_sz] [--allow_text_indexing]
+                    [--max_null_percentage MAX_NULL_PERCENTAGE]
+                    [--batch_size BATCH_SIZE]
+                    [--number_of_batches NUMBER_OF_BATCHES]
+                    [--start_batch START_BATCH] [--dump_data_stats]
+                    [--sql_username SQL_USERNAME]
+                    [--sql_password SQL_PASSWORD]
+                    [--sql_database SQL_DATABASE] [--sql_host SQL_HOST]
+                    [--sql_uri SQL_URI] [--mongo_username MONGO_USERNAME]
+                    [--mongo_password MONGO_PASSWORD]
+                    [--mongo_database MONGO_DATABASE]
+                    [--mongo_host MONGO_HOST] [--mongo_port MONGO_PORT]
+                    [--mongo_uri MONGO_URI] [--log_level LOG_LEVEL]
+                    [--neem_filters_yaml NEEM_FILTERS_YAML]
 
 optional arguments:
   -h, --help            show this help message and exit
-  --drop_neems, -dn     Drop the neems to be recreated/updated before creating them
+  --drop_neems, -dn     Drop the neems to be recreated/updated before
+                        creating them
   --drop_tables, -dt    Drop all tables first
   --skip_bad_triples, -sbt
                         Skip triples that are missing one of subject,
@@ -150,7 +140,7 @@ optional arguments:
                         Default is INFO
   --neem_filters_yaml NEEM_FILTERS_YAML, -nfy NEEM_FILTERS_YAML
                         YAML file containing the neem filters, Default is
-                        ../my_neem_filters.yaml
+                        None
 
 ```
 
