@@ -25,7 +25,7 @@ from typing_extensions import Optional, Callable, Tuple, List, Dict, Union, Any
 from .logger import CustomLogger
 from .triples_to_sql import TriplesToSQL, get_sql_type_from_pyval
 
-LOGGER = CustomLogger.LOGGER
+LOGGER = CustomLogger().get_logger()
 log_level_dict = {'DEBUG': logging.DEBUG, 'INFO': logging.INFO, 'WARNING': logging.WARNING, 'ERROR': logging.ERROR,
                   'CRITICAL': logging.CRITICAL}
 
@@ -1057,8 +1057,10 @@ class SQLCreator:
                 sql_insert_commands.append(f"INSERT IGNORE INTO {key} {cols_str} VALUES {all_rows_str};")
         return sql_insert_commands
 
-    def upload_data_to_sql(self) -> Tuple[int, float]:
+    def upload_data_to_sql(self, drop_tables: Optional[bool] = False) -> Tuple[int, float]:
         """Upload the data to the database, this will create the tables and insert the data.
+        Args:
+            drop_tables (bool, optional): [Whether to drop the tables before creating them or not]. Defaults to False.
         Returns:
             [int]: [data size in number of sql commands]
             [float]: [time taken in number of seconds]
@@ -1069,6 +1071,10 @@ class SQLCreator:
 
         # Get the insertion cmds
         sql_insert_cmds = self.get_insert_rows_commands()
+
+        # Drop tables
+        if drop_tables:
+            self._drop_tables(self.data_to_insert, conn)
 
         # Create tables
         LOGGER.debug(self.sql_table_creation_cmds)
@@ -1756,6 +1762,12 @@ def delete_neems_from_sql_database(engine: Engine, neem_ids: List[str]) -> None:
     :param neem_ids: The ids of the neems to delete.
     """
     with engine.connect() as conn:
+        # Check if neems table exists
+        cmd = text("SHOW TABLES LIKE 'neems';")
+        result = conn.execute(cmd)
+        if result.rowcount == 0:
+            LOGGER.warning("NO NEEMS TABLE FOUND")
+            return
         for neem_id in neem_ids:
             cmd = text(f"DELETE FROM neems WHERE _id = '{neem_id}';")
             conn.execute(cmd)
@@ -2053,7 +2065,7 @@ def get_mongo_uri(username: Optional[str] = None,
     return uri
 
 
-def get_sql_uri(username: str, password: str, host: str, database: str) -> str:
+def get_sql_uri(username: str, password: str, host: str, database: Optional[str] = None) -> str:
     """
     Get the SQL URI.
     Args:
@@ -2065,8 +2077,10 @@ def get_sql_uri(username: str, password: str, host: str, database: str) -> str:
     Returns:
         The SQL URI.
     """
-    uri = (f"mysql+pymysql://{username}:{password}@{host}/"
-           f"{database}?charset=utf8mb4")
+
+    uri = f"mysql+pymysql://{username}:{password}@{host}/"
+    if database is not None:
+        uri += f"{database}?charset=utf8mb4"
     return uri
 
 

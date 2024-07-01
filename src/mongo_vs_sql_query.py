@@ -1,10 +1,14 @@
 from time import time
 
-from neems_to_sql import mongo_collection_to_list_of_dicts, LOGGER, parse_arguments, \
-    get_mongo_uri, connect_to_mongo_and_get_client
-
+from neems_to_sql import mongo_collection_to_list_of_dicts, parse_arguments, \
+    get_mongo_uri, connect_to_mongo_and_get_client, filter_and_select_neems_in_batches, filter_neems
+from neems_to_sql.logger import CustomLogger, logging
 
 if __name__ == "__main__":
+
+    LOGGER = CustomLogger("MONGO_VS_SQL_QUERY",
+                          "mongo_vs_sql_query.txt",
+                          logging.DEBUG, reset_handlers=True).get_logger()
 
     # Replace the uri string with your MongoDB deployment's connection string.
     args = parse_arguments()
@@ -20,6 +24,7 @@ if __name__ == "__main__":
     # Get neem ids
     meta = db.meta
     meta_lod = mongo_collection_to_list_of_dicts(meta)
+    meta_lod = filter_neems(meta_lod, {'visibility': True})
     if len(meta_lod) == 0:
         LOGGER.error("NO NEEMS FOUND (Probably no meta data collection OR no neems with the given filters)")
         raise ValueError("NO NEEMS FOUND (Probably no meta data collection OR no neems with the given filters)")
@@ -76,6 +81,7 @@ if __name__ == "__main__":
         append_time.append(time() - start)
         total_per_neem_time.append(get_collection_time[-1] + single_query_time[-1] + append_time[-1])
 
+    LOGGER.info(f"ALL DOCS: {all_docs}")
     LOGGER.info(f"Total time: {sum(total_per_neem_time)}")
     LOGGER.info(f"Total get collection time: {sum(get_collection_time)}")
     LOGGER.info(f"Total single query time: {sum(single_query_time)}")

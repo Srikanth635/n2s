@@ -37,6 +37,7 @@ class TestNeemsToSql(TestCase):
         cls.write_engine = create_engine(write_sql_uri, future=True)
         create_database_if_not_exists_and_use_it(cls.write_engine, 'tests')
         cls.write_engine = create_engine(write_sql_uri+'tests', future=True)
+        drop_all_tables(cls.write_engine)
         cls.sql_creator = SQLCreator(cls.read_engine, tosql_func=cls.t2sql.get_sql_type)
         cls.neem_id = '5fd0f191f3fc822d8e73d715'
 
@@ -48,7 +49,9 @@ class TestNeemsToSql(TestCase):
         cls.write_engine.dispose()
 
     def tearDown(self):
+        drop_all_tables(self.write_engine)
         self.t2sql.reset_graph()
+        self.sql_creator.reset_data()
 
     def test_create_graph_from_mongo(self):
         # Create a graph from the mongo database
@@ -69,12 +72,11 @@ class TestNeemsToSql(TestCase):
         self.assertTrue({'s': 'dul:Action_IKMZVXGQ', 'o': 'dul:Action'} in predicate_dict['rdf_type'])
 
     def test_convert_dict_to_sql(self):
-        drop_all_tables(self.write_engine)
         self.sql_creator.engine = self.write_engine
         meta_lod = read_and_convert_neem_meta_data_to_sql(self.mongo_db,
                                                           self.sql_creator
-                                                          # ,neem_filters={'_id': cls.neem_id}
-                                                          , neem_filters={'visibility': True}
+                                                          ,neem_filters={'_id': self.neem_id}
+                                                          # , neem_filters={'visibility': True}
                                                           , batch_size=4
                                                           , number_of_batches=0
                                                           )
@@ -84,10 +86,11 @@ class TestNeemsToSql(TestCase):
             self.create_graph_from_mongo(neem_id)
             predicate_dict = self.t2sql.graph_to_dict()
             dict_to_sql(predicate_dict, self.sql_creator, neem_id=neem_id)
+        # self.sql_creator.reset_data()
         self.sql_creator.upload_data_to_sql(drop_tables=True)
         col_vals = get_value_from_sql('rdfs_isDefinedBy',
                                       self.write_engine, col_name='o'
-                                      , col_value_pairs={'rdfs_Resource_s': 'soma'})
+                                      , col_value_pairs={'s': 'soma'})
         self.assertTrue(len(col_vals) > 0)
         self.assertTrue(self.t2sql.ns_str['soma'] in col_vals)
         self.assertTrue(col_vals.count(self.t2sql.ns_str['soma']) == 1)
