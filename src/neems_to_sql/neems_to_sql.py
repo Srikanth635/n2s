@@ -2036,8 +2036,8 @@ def parse_arguments():
     parser.add_argument("--log_level", "-logl", default="INFO",
                         help="Log level (DEBUG, INFO, WARNING, ERROR, CRITICAL), Default is INFO")
     parser.add_argument("--neem_filters_yaml", "-nfy",
-                        default=os.path.join(os.getcwd(), "my_neem_filters.yaml"), type=str,
-                        help="YAML file containing the neem filters, Default is my_neem_filters.yaml")
+                        default=None, type=str,
+                        help="YAML file containing the neem filters, Default is None")
     return parser.parse_args()
 
 
@@ -2132,8 +2132,9 @@ def get_neem_filters_from_yaml(neem_filters_yaml: Optional[str] = None) -> dict:
                 LOGGER.error(exc)
                 raise
     else:
-        filters = None
+        filters = {'visibility': 'True'}
     return filters
+
 
 def main():
     # Parse command line arguments
