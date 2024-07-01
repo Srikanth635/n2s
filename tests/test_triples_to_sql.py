@@ -4,7 +4,7 @@ from unittest import TestCase
 from pymongo import MongoClient
 from rdflib import RDFS
 from sqlalchemy import create_engine
-from sqlalchemy.engine import Engine, URL
+from sqlalchemy.engine import Engine
 from typing_extensions import Optional
 
 from neems_to_sql import TriplesToSQL, SQLCreator, read_and_convert_neem_meta_data_to_sql, drop_all_tables, \
@@ -36,7 +36,7 @@ class TestNeemsToSql(TestCase):
         cls.read_engine = create_engine(read_sql_uri, future=True)
         cls.write_engine = create_engine(write_sql_uri, future=True)
         create_database_if_not_exists_and_use_it(cls.write_engine, 'tests')
-        cls.write_engine = create_engine(write_sql_uri+'tests', future=True)
+        cls.write_engine = create_engine(write_sql_uri + 'tests', future=True)
         drop_all_tables(cls.write_engine)
         cls.sql_creator = SQLCreator(cls.read_engine, tosql_func=cls.t2sql.get_sql_type)
         cls.neem_id = '5fd0f191f3fc822d8e73d715'
@@ -75,7 +75,7 @@ class TestNeemsToSql(TestCase):
         self.sql_creator.engine = self.write_engine
         meta_lod = read_and_convert_neem_meta_data_to_sql(self.mongo_db,
                                                           self.sql_creator
-                                                          ,neem_filters={'_id': self.neem_id}
+                                                          , neem_filters={'_id': self.neem_id}
                                                           # , neem_filters={'visibility': True}
                                                           , batch_size=4
                                                           , number_of_batches=0

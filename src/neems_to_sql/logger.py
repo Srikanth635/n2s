@@ -1,6 +1,5 @@
 import logging
 import os
-import sys
 
 from typing_extensions import Optional
 

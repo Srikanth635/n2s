@@ -1,11 +1,8 @@
-from neems_to_sql import (get_neem_filters_from_yaml, get_mongo_uri, get_sql_uri,
-                          connect_to_mongo_and_get_client,
-                          parse_arguments, set_logging_level, get_mongo_neems_and_put_into_sql_database)
-from sqlalchemy import create_engine
+from neems_to_sql.neems_to_sql import get_mongo_neems_and_put_into_sql_database, get_neem_filters_from_yaml, \
+    connect_to_mongo_and_get_client, get_mongo_uri, get_sql_uri, set_logging_level, parse_arguments, create_engine
 
 
-if __name__ == "__main__":
-
+def main():
     # Parse command line arguments
     args = parse_arguments()
 
@@ -41,3 +38,7 @@ if __name__ == "__main__":
                                               number_of_batches=args.number_of_batches,
                                               start_batch=args.start_batch,
                                               dump_data_stats=args.dump_data_stats)
+
+
+if __name__ == "__main__":
+    main()
