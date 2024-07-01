@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "neem_to_sql"
-version = "1.0.4"
+version = "1.0.5"
 description = "Convert NEEMs database from Mongo to SQL"
 readme = "README.md"
 authors = [{ name = "Abdelrhman Bassiouny", email = "abassiou@uni-bremen.de" }]
@@ -29,7 +29,7 @@ dependencies = ["ipython==8.12.0",
 requires-python = ">=3.8"
 
 [project.scripts]
-my_command = "src.migrate_neems_to_sql:main"
+neems_to_sql = "neems_to_sql.neems_to_sql:main"
 
 [project.urls]
 Homepage = "https://github.com/AbdelrhmanBassiouny/neem_to_sql"
