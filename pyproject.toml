@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "neem_to_sql"
-version = "1.0.7"
+version = "1.0.8"
 description = "Convert NEEMs database from Mongo to SQL"
 readme = "README.md"
 authors = [{ name = "Abdelrhman Bassiouny", email = "abassiou@uni-bremen.de" }]

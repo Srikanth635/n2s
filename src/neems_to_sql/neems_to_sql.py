@@ -2132,7 +2132,7 @@ def get_neem_filters_from_yaml(neem_filters_yaml: Optional[str] = None) -> dict:
                 LOGGER.error(exc)
                 raise
     else:
-        filters = {'visibility': 'True'}
+        filters = {'visibility': True}
     return filters
 
 
