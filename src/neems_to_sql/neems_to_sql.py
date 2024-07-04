@@ -1,6 +1,5 @@
 import argparse
 import logging
-import os
 import pickle
 import re
 from copy import deepcopy
@@ -2021,7 +2020,8 @@ def parse_arguments():
      Default is test")
     parser.add_argument("--sql_host", "-sh", default="localhost", help="SQL host name,\
      Default is localhost")
-    parser.add_argument("--sql_uri", "-suri", type=str, default=None,
+    parser.add_argument("--sql_uri", "-suri", type=str,
+                        default="mysql+pymysql://newuser:password@localhost/test",
                         help="SQL URI this replaces the other SQL arguments, Default is None")
     parser.add_argument("--mongo_username", "-mu", help="MongoDB username")
     parser.add_argument("--mongo_password", "-mp", help="MongoDB password")

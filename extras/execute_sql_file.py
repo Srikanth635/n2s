@@ -13,16 +13,17 @@ User = "newuser"
 # Password for the database user
 Password = os.environ['MYSQL_USER_PASS']           
   
-conn  = pymysql.connect(host=Host, user=User, password=Password, database='test')
+conn = pymysql.connect(host=Host, user=User, password=Password, database='test')
   
 # Create a cursor object
-cur  = conn.cursor()
+cur = conn.cursor()
   
 # cur.execute("SHOW DATABASES")
 # databaseList = cur.fetchall()
   
 # for database in databaseList:
 #   print(database)
+
 
 def executeScriptsFromFile(filename, cursor):
     # Open and read the file as a single buffer
@@ -49,7 +50,8 @@ def executeScriptsFromFile(filename, cursor):
         # except OperationalError as msg:
         #     print("Command skipped: ", msg)
 
-executeScriptsFromFile(os.path.join(os.getcwd(),"neems/tf_template.sql"), cur)
+
+executeScriptsFromFile(os.path.join(os.getcwd(), "neems/tf_template.sql"), cur)
 # cur.execute("DROP TABLE IF EXISTS PRODUCT") 
 # query = """CREATE TABLE transform ( 
 #          translation  CHAR(20) NOT NULL, 
