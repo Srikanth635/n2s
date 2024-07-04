@@ -11,23 +11,14 @@ from neems_to_sql.neems_to_sql import mongo_collection_to_list_of_dicts, parse_a
 
 def execute_query_in_mongo(mongo_db, mongo_neem_ids: List,
                            mongo_query_name: str,
-                           query_per_neem: Callable[[ObjectId], List[Dict]],
                            coll_to_use_in_aggregate: str,
+                           query,
                            limit: Optional[int] = None,
                            number_of_repeats: Optional[int] = 10):
     single_query_time = []
     first_neem_id = mongo_neem_ids[0]
     coll = mongo_db.get_collection(f"{first_neem_id}_{coll_to_use_in_aggregate}")
-    query = query_per_neem(first_neem_id)
     number_of_query_lines_per_neem = len(query)
-    query.extend([
-        {
-            "$unionWith": {
-                "coll": f"{neem_id}_{coll_to_use_in_aggregate}",
-                "pipeline": query_per_neem(neem_id)
-            }
-        } for neem_id in mongo_neem_ids[1:]
-    ])
     if limit is not None:
         query.append({"$limit": limit})
     all_docs = []
@@ -36,13 +27,31 @@ def execute_query_in_mongo(mongo_db, mongo_neem_ids: List,
         cursor = coll.aggregate(query)
         all_docs = [doc for doc in cursor]
         single_query_time.append(time() - start)
+    avg_time = sum(single_query_time) / number_of_repeats
     LOGGER.info(f"Mongo Query: {mongo_query_name}")
-    LOGGER.info(f"Avg time for {number_of_repeats} repeats: {sum(single_query_time) / number_of_repeats}")
+    LOGGER.info(f"Avg time for {number_of_repeats} repeats: {avg_time}")
+    LOGGER.info(f"Avg time per doc: {avg_time / len(all_docs)}")
     LOGGER.info(f"Total number of documents: {len(all_docs)}")
     LOGGER.info(f"Number of query lines per neem: {number_of_query_lines_per_neem}")
     LOGGER.info(f"Number of neems: {len(mongo_neem_ids)}")
     LOGGER.info(f"Number of query lines: {number_of_query_lines_per_neem * len(mongo_neem_ids)}")
     LOGGER.info(f"First doc: {all_docs[0]}")
+
+
+def union_the_mongo_query_on_all_neems(mongo_neem_ids: List, query_per_neem: Callable[[ObjectId], List[Dict]],
+                                       coll_to_use_in_aggregate: str, group_by: Optional[str] = None):
+    first_neem_id = mongo_neem_ids[0]
+    query = query_per_neem(first_neem_id)
+    query.extend([
+        {
+            "$unionWith": {
+                "coll": f"{neem_id}_{coll_to_use_in_aggregate}",
+                "pipeline": query_per_neem(neem_id)
+            }
+        } for neem_id in mongo_neem_ids[1:]
+    ])
+    if group_by is not None:
+        query.append({"$group": {"_id": f"${group_by}"}})
 
 
 def execute_query_in_sql(sql_engine, query: str, sql_query_name: str, limit: Optional[int] = None,
@@ -56,27 +65,40 @@ def execute_query_in_sql(sql_engine, query: str, sql_query_name: str, limit: Opt
             result = connection.execute(text(query))
             all_docs = [row for row in result]
             single_query_time.append(time() - start)
-    LOGGER.info(f"SQL Query: {sql_query_name}")
-    LOGGER.info(f"Avg time for {number_of_repeats} repeats: {sum(single_query_time) / number_of_repeats}")
-    LOGGER.info(f"Total number of documents: {len(all_docs)}")
-    LOGGER.info(f"First Row: {all_docs[0]}")
+    log_sql_query_stats(sql_query_name, single_query_time, all_docs, number_of_repeats)
 
 
 def execute_query_in_sql_by_looping_over_neems(sql_engine, query: Callable[[str], str], sql_query_name: str,
-                                               neem_ids: List,
+                                               mongo_neem_ids: List,
                                                number_of_repeats: Optional[int] = 10):
     single_query_time = []
     with sql_engine.connect() as connection:
         for i in range(number_of_repeats):
             start = time()
             all_docs = []
-            for neem_id in neem_ids:
+            for neem_id in mongo_neem_ids:
                 result = connection.execute(text(query(str(neem_id))))
                 all_docs.extend([row for row in result])
             single_query_time.append(time() - start)
+    log_sql_query_stats(sql_query_name, single_query_time, all_docs, number_of_repeats)
+
+
+def log_sql_query_stats(sql_query_name: str, single_query_time: List, all_docs: List, number_of_repeats: int):
+    """
+    Log the stats of the SQL query.
+    Args:
+        sql_query_name: The name of the SQL query.
+        single_query_time: The time taken for each query.
+        all_docs: The list of all the documents (rows) returned by the query.
+        number_of_repeats: The number of repeats of the query for time calculation.
+
+    Returns: None
+    """
+    avg_time = sum(single_query_time) / number_of_repeats
     LOGGER.info(f"SQL Query: {sql_query_name}")
-    LOGGER.info(f"Avg time for {number_of_repeats} repeats: {sum(single_query_time) / number_of_repeats}")
-    LOGGER.info(f"Total number of documents: {len(all_docs)}")
+    LOGGER.info(f"Avg time for {number_of_repeats} repeats: {avg_time}")
+    LOGGER.info(f"Avg time per row: {avg_time / len(all_docs)}")
+    LOGGER.info(f"Total number of rows: {len(all_docs)}")
     LOGGER.info(f"First Row: {all_docs[0]}")
 
 
@@ -102,12 +124,7 @@ def get_mongo_task_query_for_neem(neem_id):
             }]
 
 
-def get_mongo_pr2_links_query(neem_id):
-    # tf_coll = db.get_collection(f"{neem_id}_tf")
-    # tf_coll.aggregate([
-    #     {"$match": {status: "active"}},
-    #     {"$merge": {"into": f"filtered_{neem_id}_tf"}},
-    # ])
+def get_mongo_query_for_pr2_links():
     return [{"$match": {'s': {"$regex": r"^http://knowrob.org/kb/PR2.owl#", "$options": "i"},
                         'p': 'http://www.w3.org/1999/02/22-rdf-syntax-ns#type',
                         'o': 'http://knowrob.org/kb/urdf.owl#Link'
@@ -119,7 +136,12 @@ def get_mongo_pr2_links_query(neem_id):
                              'p': 1,
                              'o': 1
                              }
-            },
+            }
+            ]
+
+
+def join_mongo_query_for_tf_of_pr2_links(neem_id):
+    return [
             {
                 "$lookup":
                     {
@@ -146,13 +168,20 @@ def get_sql_task_query() -> str:
 
 
 def get_sql_pr2_links_query() -> str:
-    query = text("""Select tf.*
-                    From rdf_type as rdft
-                            INNER JOIN tf ON tf.child_frame_id = substring_index(rdft.s, ':', -1)
-                                         AND rdft.neem_id = tf.neem_id
-                    Where rdft.o = 'urdf:link'
-                      AND rdft.s REGEXP '^pr2:'
-                      """)
+    # query = text("""Select tf.*
+    #                 From rdf_type as rdft
+    #                         INNER JOIN tf ON tf.child_frame_id = substring_index(rdft.s, ':', -1)
+    #                                      AND rdft.neem_id = tf.neem_id
+    #                 Where rdft.o = 'urdf:link'
+    #                   AND rdft.s REGEXP '^pr2:'
+    #                   """)
+    query = text(f"""Select tf.*
+                         From (Select distinct substring_index(rdft.s, ':', -1) as s
+                                              From rdf_type as rdft
+                                              Where o = 'urdf:link'
+                                                AND s REGEXP '^pr2:') AS unique_links
+                         INNER JOIN tf ON tf.child_frame_id = unique_links.s
+                          """)
     return query.__str__()
 
 
@@ -168,12 +197,12 @@ def get_sql_pr2_links_query_per_neem(neem_id: str) -> str:
     #                  Where tf.neem_id = \"{neem_id}\"
     #                     """)
     query = text(f"""Select tf.*
-                     From (Select distinct rdft.s, rdft.neem_id
+                     From (Select distinct substring_index(rdft.s, ':', -1) as s
                                           From rdf_type as rdft
                                           Where o = 'urdf:link'
                                             AND s REGEXP '^pr2:'
-                                            AND neem_id = \"{neem_id}\") AS rdft
-                     INNER JOIN tf ON tf.child_frame_id IN (substring_index(rdft.s, ':', -1))
+                                            AND neem_id = \"{neem_id}\") AS unique_links
+                     INNER JOIN tf ON tf.child_frame_id IN (unique_links.s)
                      WHERE tf.neem_id = \"{neem_id}\"
                       """)
     return query.__str__()
@@ -226,9 +255,9 @@ if __name__ == "__main__":
 
     LOGGER.info("##################################################################################")
     query_name = "Find all pr2 links."
-    execute_query_in_mongo(db, neem_ids, query_name, get_mongo_pr2_links_query, "triples",
+    execute_query_in_mongo(db, neem_ids, query_name, get_mongo_query_for_pr2_links, "triples",
                            number_of_repeats=1)
-    # execute_query_in_sql(engine, get_sql_pr2_links_query(), query_name, limit=1000)
-    execute_query_in_sql_by_looping_over_neems(engine, get_sql_pr2_links_query_per_neem, query_name, neem_ids,
-                                               number_of_repeats=1)
+    execute_query_in_sql(engine, get_sql_pr2_links_query(), query_name, number_of_repeats=1)
+    # execute_query_in_sql_by_looping_over_neems(engine, get_sql_pr2_links_query_per_neem, query_name, neem_ids,
+    #                                            number_of_repeats=1)
     LOGGER.info("##################################################################################")
