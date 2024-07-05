@@ -12,15 +12,20 @@ from neems_to_sql.neems_to_sql import mongo_collection_to_list_of_dicts, parse_a
 def execute_query_in_mongo(mongo_db, mongo_neem_ids: List,
                            mongo_query_name: str,
                            coll_to_use_in_aggregate: str,
-                           query,
+                           query: List[Dict],
                            limit: Optional[int] = None,
                            number_of_repeats: Optional[int] = 10):
     single_query_time = []
     first_neem_id = mongo_neem_ids[0]
-    coll = mongo_db.get_collection(f"{first_neem_id}_{coll_to_use_in_aggregate}")
+    if coll_to_use_in_aggregate in ["triples", "tf"]:
+        coll_name = lambda neem_id: f"{neem_id}_{coll_to_use_in_aggregate}"
+    else:
+        coll_name = lambda _: coll_to_use_in_aggregate
+    coll = mongo_db.get_collection(coll_name(first_neem_id))
     number_of_query_lines_per_neem = len(query)
     if limit is not None:
         query.append({"$limit": limit})
+    LOGGER.info(f"QUERY: {query}")
     all_docs = []
     for i in range(number_of_repeats):
         start = time()
@@ -39,19 +44,36 @@ def execute_query_in_mongo(mongo_db, mongo_neem_ids: List,
 
 
 def union_the_mongo_query_on_all_neems(mongo_neem_ids: List, query_per_neem: Callable[[ObjectId], List[Dict]],
-                                       coll_to_use_in_aggregate: str, group_by: Optional[str] = None):
+                                       coll_to_use_in_aggregate: str, start_query: Optional[List[Dict]] = None,
+                                       group_by: Optional[str] = None,
+                                       merge_into: Optional[str] = None) -> List[Dict]:
     first_neem_id = mongo_neem_ids[0]
-    query = query_per_neem(first_neem_id)
+    if start_query is None:
+        query = query_per_neem(first_neem_id)
+    else:
+        query = start_query
+        query.extend(query_per_neem(first_neem_id))
+    if coll_to_use_in_aggregate in ["triples", "tf"]:
+        coll = lambda neem_id: f"{neem_id}_{coll_to_use_in_aggregate}"
+    else:
+        coll = lambda _: coll_to_use_in_aggregate
     query.extend([
         {
             "$unionWith": {
-                "coll": f"{neem_id}_{coll_to_use_in_aggregate}",
+                "coll": coll(neem_id),
                 "pipeline": query_per_neem(neem_id)
             }
         } for neem_id in mongo_neem_ids[1:]
     ])
+
     if group_by is not None:
-        query.append({"$group": {"_id": f"${group_by}"}})
+        query.append({"$group": {f"_id": f"${group_by}"}})
+        query.append({"$project": {f"{group_by}": "$_id", "_id": 0}})
+
+    if merge_into is not None:
+        query.append({"$merge": {"into": merge_into}})
+
+    return query
 
 
 def execute_query_in_sql(sql_engine, query: str, sql_query_name: str, limit: Optional[int] = None,
@@ -102,7 +124,11 @@ def log_sql_query_stats(sql_query_name: str, single_query_time: List, all_docs: 
     LOGGER.info(f"First Row: {all_docs[0]}")
 
 
-def get_mongo_task_query_for_neem(neem_id):
+def get_mongo_task_query_for_all_neems(mongo_neem_ids: List):
+    return union_the_mongo_query_on_all_neems(mongo_neem_ids, get_mongo_task_query_for_neem, "triples")
+
+
+def get_mongo_task_query_for_neem(neem_id) -> List[Dict]:
     return [{"$match": {"p": "http://www.ontologydesignpatterns.org/ont/dul/DUL.owl#executesTask"}},
             {
                 "$lookup":
@@ -124,6 +150,16 @@ def get_mongo_task_query_for_neem(neem_id):
             }]
 
 
+def get_mongo_tf_of_pr2_links_for_all_neems(mongo_db, mongo_neem_ids: List):
+    query = union_the_mongo_query_on_all_neems(mongo_neem_ids, lambda x: get_mongo_query_for_pr2_links(),
+                                               "triples", group_by="s", merge_into="unique_pr2_links")
+    coll = mongo_db.get_collection(f"{mongo_neem_ids[0]}_triples")
+    coll.aggregate(query)
+    query = union_the_mongo_query_on_all_neems(mongo_neem_ids, join_mongo_tf_on_pr2_links_for_neem,
+                                               "unique_pr2_links")
+    return query
+
+
 def get_mongo_query_for_pr2_links():
     return [{"$match": {'s': {"$regex": r"^http://knowrob.org/kb/PR2.owl#", "$options": "i"},
                         'p': 'http://www.w3.org/1999/02/22-rdf-syntax-ns#type',
@@ -140,20 +176,27 @@ def get_mongo_query_for_pr2_links():
             ]
 
 
-def join_mongo_query_for_tf_of_pr2_links(neem_id):
+def join_mongo_tf_on_pr2_links_for_neem(neem_id):
     return [
-            {
-                "$lookup":
-                    {
-                        "from": f"{neem_id}_tf",
-                        "localField": "s",
-                        "foreignField": "child_frame_id",
-                        "as": f"{neem_id}_pr2_links_tf"
-                    }
-            },
-            {"$project": {f"{neem_id}_pr2_links_tf": 1}},
-            {"$unwind": f"${neem_id}_pr2_links_tf"},
-            ]
+        {
+            "$lookup":
+                {
+                    "from": f"{neem_id}_tf",
+                    "localField": "s",
+                    "foreignField": "child_frame_id",
+                    "as": f"{neem_id}_pr2_links_tf"
+                }
+        },
+        # {
+        #     "$match": {
+        #         "$expr": {
+        #             "$in": ["$child_frame_id", "$s"]
+        #         }
+        #     }
+        # },
+        {"$project": {f"{neem_id}_pr2_links_tf": 1}},
+        {"$unwind": f"${neem_id}_pr2_links_tf"},
+    ]
 
 
 def get_sql_task_query() -> str:
@@ -249,15 +292,17 @@ if __name__ == "__main__":
 
     # Execute the queries in MongoDB and SQL.
     query_name = "Find all tasks that are of type Gripping."
-    execute_query_in_mongo(db, neem_ids, query_name, get_mongo_task_query_for_neem, "triples")
+    execute_query_in_mongo(db, neem_ids, query_name, "triples",
+                           get_mongo_task_query_for_all_neems(neem_ids))
     LOGGER.info("============================================================")
     execute_query_in_sql(engine, get_sql_task_query(), query_name)
 
     LOGGER.info("##################################################################################")
     query_name = "Find all pr2 links."
-    execute_query_in_mongo(db, neem_ids, query_name, get_mongo_query_for_pr2_links, "triples",
+    execute_query_in_mongo(db, neem_ids, query_name, "unique_pr2_links",
+                           get_mongo_tf_of_pr2_links_for_all_neems(db, neem_ids),
                            number_of_repeats=1)
-    execute_query_in_sql(engine, get_sql_pr2_links_query(), query_name, number_of_repeats=1)
+    # execute_query_in_sql(engine, get_sql_pr2_links_query(), query_name, number_of_repeats=1)
     # execute_query_in_sql_by_looping_over_neems(engine, get_sql_pr2_links_query_per_neem, query_name, neem_ids,
     #                                            number_of_repeats=1)
     LOGGER.info("##################################################################################")
