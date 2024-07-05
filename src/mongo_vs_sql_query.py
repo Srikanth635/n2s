@@ -1,3 +1,4 @@
+import json
 from time import time
 
 from bson import ObjectId
@@ -25,7 +26,8 @@ def execute_query_in_mongo(mongo_db, mongo_neem_ids: List,
     number_of_query_lines_per_neem = len(query)
     if limit is not None:
         query.append({"$limit": limit})
-    LOGGER.info(f"QUERY: {query}")
+    # json_formatted_str = json.dumps(query, indent=2)
+    # LOGGER.info(f"QUERY: {json_formatted_str}")
     all_docs = []
     for i in range(number_of_repeats):
         start = time()
@@ -68,7 +70,7 @@ def union_the_mongo_query_on_all_neems(mongo_neem_ids: List, query_per_neem: Cal
 
     if group_by is not None:
         query.append({"$group": {f"_id": f"${group_by}"}})
-        query.append({"$project": {f"{group_by}": "$_id", "_id": 0}})
+        query.append({"$project": {f"{group_by}": "$_id"}})
 
     if merge_into is not None:
         query.append({"$merge": {"into": merge_into}})
@@ -152,7 +154,7 @@ def get_mongo_task_query_for_neem(neem_id) -> List[Dict]:
 
 def get_mongo_tf_of_pr2_links_for_all_neems(mongo_db, mongo_neem_ids: List):
     query = union_the_mongo_query_on_all_neems(mongo_neem_ids, lambda x: get_mongo_query_for_pr2_links(),
-                                               "triples", group_by="s", merge_into="unique_pr2_links")
+                                               "triples", group_by="pr2_link", merge_into="unique_pr2_links")
     coll = mongo_db.get_collection(f"{mongo_neem_ids[0]}_triples")
     coll.aggregate(query)
     query = union_the_mongo_query_on_all_neems(mongo_neem_ids, join_mongo_tf_on_pr2_links_for_neem,
@@ -167,10 +169,8 @@ def get_mongo_query_for_pr2_links():
                         }
              },
             {
-                "$project": {'s': {"$substrCP": ['$s', 30,
-                                                 {"$subtract": [{"$strLenCP": '$s'}, 1]}]},
-                             'p': 1,
-                             'o': 1
+                "$project": {'pr2_link': {"$substrCP": ['$s', 30,
+                                                 {"$subtract": [{"$strLenCP": '$s'}, 1]}]}
                              }
             }
             ]
@@ -182,9 +182,9 @@ def join_mongo_tf_on_pr2_links_for_neem(neem_id):
             "$lookup":
                 {
                     "from": f"{neem_id}_tf",
-                    "localField": "s",
+                    "localField": "pr2_link",
                     "foreignField": "child_frame_id",
-                    "as": f"{neem_id}_pr2_links_tf"
+                    "as": f"pr2_links_tf"
                 }
         },
         # {
@@ -194,8 +194,13 @@ def join_mongo_tf_on_pr2_links_for_neem(neem_id):
         #         }
         #     }
         # },
-        {"$project": {f"{neem_id}_pr2_links_tf": 1}},
-        {"$unwind": f"${neem_id}_pr2_links_tf"},
+        {
+            "$match": {  # Filters out documents where there is no match
+                f"pr2_links_tf.child_frame_id": {"$exists": True}
+            }
+        },
+        {"$project": {f"pr2_links_tf.child_frame_id": 1, "_id": 0}},
+        {"$unwind": f"$pr2_links_tf"},
     ]
 
 
@@ -302,7 +307,7 @@ if __name__ == "__main__":
     execute_query_in_mongo(db, neem_ids, query_name, "unique_pr2_links",
                            get_mongo_tf_of_pr2_links_for_all_neems(db, neem_ids),
                            number_of_repeats=1)
-    # execute_query_in_sql(engine, get_sql_pr2_links_query(), query_name, number_of_repeats=1)
+    execute_query_in_sql(engine, get_sql_pr2_links_query(), query_name, number_of_repeats=1)
     # execute_query_in_sql_by_looping_over_neems(engine, get_sql_pr2_links_query_per_neem, query_name, neem_ids,
     #                                            number_of_repeats=1)
     LOGGER.info("##################################################################################")
