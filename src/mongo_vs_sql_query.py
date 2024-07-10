@@ -1,7 +1,7 @@
 from time import time
 
 from bson import ObjectId
-from neem_query import NeemQuery, RdfType, Tf, TaskType, TfHeader
+from neem_query import NeemQuery, RdfType, Tf, TaskType
 from sqlalchemy import text, create_engine
 from typing_extensions import List, Optional, Dict, Callable
 
@@ -92,7 +92,8 @@ def execute_query_in_sql(sql_engine, query: str, sql_query_name: str, limit: Opt
     log_sql_query_stats(sql_query_name, single_query_time, all_docs, number_of_repeats)
 
 
-def execute_query_in_sql_using_orm(neem_query: NeemQuery, orm_query_func: Callable[[NeemQuery], NeemQuery], sql_query_name: str,
+def execute_query_in_sql_using_orm(neem_query: NeemQuery, orm_query_func: Callable[[NeemQuery], NeemQuery],
+                                   sql_query_name: str,
                                    limit: Optional[int] = None,
                                    number_of_repeats: Optional[int] = 10):
     single_query_time = []
@@ -113,7 +114,15 @@ def get_orm_query_for_tf_data_of_pr2_links(neem_query: NeemQuery):
     pr2_links = (neem_query.select(RdfType.s).filter_by_type(RdfType, ["urdf:link"])
                  .filter(RdfType.s.like("%pr2%")).distinct()).get_result().df["rdf_type_s"].str.split(':').str[-1]
     neem_query.reset()
-    return neem_query.select(Tf.child_frame_id, Tf.neem_id).filter(Tf.child_frame_id.in_(pr2_links))
+    return neem_query.select(Tf.child_frame_id).filter(Tf.child_frame_id.in_(pr2_links))
+
+
+def get_orm_query_for_task_data(neem_query: NeemQuery):
+    return neem_query.select(TaskType.s).filter_by_type(TaskType, ["soma:Gripping"])
+
+
+def get_orm_query_for_tf_data_of_base_link(neem_query: NeemQuery):
+    return neem_query.select(Tf.child_frame_id).filter(Tf.child_frame_id == "base_link")
 
 
 def execute_query_in_sql_by_looping_over_neems(sql_engine, query: Callable[[str], str], sql_query_name: str,
@@ -171,11 +180,11 @@ def get_mongo_task_query_for_neem(neem_id) -> List[Dict]:
             },
             {"$match": {f'{neem_id}.p': 'http://www.w3.org/1999/02/22-rdf-syntax-ns#type',
                         f'{neem_id}.o': 'http://www.ease-crc.org/ont/SOMA.owl#Gripping'}},
+            {"$unwind": f"${neem_id}"},  # Unwind the array
             {
                 "$project": {
                     f"{neem_id}.s": 1,
-                    f"{neem_id}.p": 1,
-                    f"{neem_id}.o": 1
+                    "_id": 0
                 }
             }]
 
@@ -188,7 +197,8 @@ def get_mongo_query_for_tf_data_of_base_link_for_all_neems(mongo_neem_ids: List)
 
 
 def get_mongo_query_for_tf_data_of_base_link_for_neem():
-    return [{"$match": {"child_frame_id": "base_link"}}]
+    return [{"$match": {"child_frame_id": "base_link"}},
+            {"$project": {"child_frame_id": 1, "_id": 0}}]
 
 
 def get_mongo_query_for_tf_data_of_pr2_links_for_all_neems(mongo_db, mongo_neem_ids: List):
@@ -231,14 +241,14 @@ def join_mongo_tf_on_pr2_links_for_neem(neem_id):
                 f"pr2_links_tf.child_frame_id": {"$exists": True}
             }
         },
-        {"$project": {f"pr2_links_tf.child_frame_id": 1, "_id": 0}},
         {"$unwind": f"$pr2_links_tf"},
+        {"$project": {f"pr2_links_tf.child_frame_id": 1, "_id": 0}},
     ]
 
 
 def get_sql_query_for_task_data() -> str:
     query = text("""
-        SELECT task_type.*
+        SELECT task_type.s
         FROM dul_executesTask AS tasks
         INNER JOIN rdf_type AS task_type ON task_type.s = tasks.dul_Task_o
                                         AND task_type.o = 'soma:Gripping'
@@ -247,16 +257,8 @@ def get_sql_query_for_task_data() -> str:
     return query.__str__()
 
 
-def get_orm_query_for_task_data(nq: NeemQuery):
-    return nq.select_from(TaskType).filter_by_type(TaskType, ["soma:Gripping"])
-
-
-def get_orm_query_for_tf_data_of_base_link(nq: NeemQuery):
-    return nq.select(Tf.child_frame_id, Tf.neem_id).filter(Tf.child_frame_id == "base_link")
-
-
 def get_sql_query_for_tf_data_of_base_link() -> str:
-    query = text("""Select tf.*
+    query = text("""Select tf.child_frame_id
                     From tf
                     Where tf.child_frame_id = 'base_link'
                       """)
@@ -282,7 +284,7 @@ def get_sql_query_for_tf_data_of_pr2_links() -> str:
                         SELECT DISTINCT SUBSTRING(rdf_type.s, 5) AS pr2_link_names
                         FROM rdf_type
                         WHERE rdf_type.o = 'urdf:link' AND rdf_type.s like '%pr2%')
-                    SELECT pr2_links.*
+                    SELECT pr2_links.pr2_link_names
                     FROM pr2_links
                     INNER JOIN tf ON tf.child_frame_id in (pr2_links.pr2_link_names)
                     """)
@@ -336,6 +338,46 @@ def connect_to_mongo_and_get_neems_database(input_args):
     return mongo_db
 
 
+def mongo_vs_sql_for_getting_all_gripping_tasks(mongo_db, mongo_neem_ids: List[ObjectId], sql_engine,
+                                                neem_query: NeemQuery):
+    query_name = "Find all tasks that are of type Gripping."
+    execute_query_in_mongo(mongo_db, mongo_neem_ids, query_name, "triples",
+                           get_mongo_task_query_for_all_neems(mongo_neem_ids))
+    LOGGER.info("============================================================")
+    execute_query_in_sql(sql_engine, get_sql_query_for_task_data(), query_name)
+    LOGGER.info("============================================================")
+    execute_query_in_sql_using_orm(neem_query, get_orm_query_for_task_data, query_name)
+    LOGGER.info("##################################################################################")
+
+
+def mongo_vs_sql_for_getting_tf_data_for_base_link(mongo_db, mongo_neem_ids: List[ObjectId], sql_engine,
+                                                   neem_query: NeemQuery):
+    query_name = "Find TF Data for base_link,"
+    execute_query_in_mongo(mongo_db, mongo_neem_ids, query_name, "tf",
+                           get_mongo_query_for_tf_data_of_base_link_for_all_neems(mongo_neem_ids),
+                           number_of_repeats=10)
+    LOGGER.info("============================================================")
+    execute_query_in_sql(sql_engine, get_sql_query_for_tf_data_of_base_link(), query_name, number_of_repeats=10)
+    LOGGER.info("============================================================")
+    execute_query_in_sql_using_orm(neem_query, get_orm_query_for_tf_data_of_base_link, query_name, number_of_repeats=10)
+    LOGGER.info("##################################################################################")
+
+
+def mongo_vs_sql_for_getting_tf_data_for_pr2_links(mongo_db, mongo_neem_ids: List[ObjectId], sql_engine,
+                                                   neem_query: NeemQuery):
+    query_name = "Find TF Data for all pr2 links."
+    execute_query_in_mongo(mongo_db, mongo_neem_ids, query_name, "unique_pr2_links",
+                           get_mongo_query_for_tf_data_of_pr2_links_for_all_neems(mongo_db, mongo_neem_ids),
+                           number_of_repeats=10)
+    LOGGER.info("============================================================")
+    execute_query_in_sql(sql_engine, get_sql_query_for_tf_data_of_pr2_links(), query_name, number_of_repeats=10)
+    # execute_query_in_sql_by_looping_over_neems(sql_engine, get_sql_pr2_links_query_per_neem, query_name,
+    # mongo_neem_ids, number_of_repeats=1)
+    LOGGER.info("============================================================")
+    execute_query_in_sql_using_orm(neem_query, get_orm_query_for_tf_data_of_pr2_links, query_name, number_of_repeats=10)
+    LOGGER.info("##################################################################################")
+
+
 if __name__ == "__main__":
     LOGGER = CustomLogger("MONGO_VS_SQL_QUERY",
                           "mongo_vs_sql_query.txt",
@@ -348,37 +390,11 @@ if __name__ == "__main__":
     db = connect_to_mongo_and_get_neems_database(args)
     neem_ids = filter_neems_and_get_neem_ids(db, {'visibility': True})
 
-    # Initialize the SQL engine.
+    # Initialize the SQL engine and the NeemQuery object.
     engine = create_engine(args.sql_uri)
     nq = NeemQuery(engine=engine)
 
     # Execute the queries in MongoDB and SQL.
-    query_name = "Find all tasks that are of type Gripping."
-    execute_query_in_mongo(db, neem_ids, query_name, "triples",
-                           get_mongo_task_query_for_all_neems(neem_ids))
-    LOGGER.info("============================================================")
-    execute_query_in_sql(engine, get_sql_query_for_task_data(), query_name)
-    LOGGER.info("============================================================")
-    execute_query_in_sql_using_orm(nq, get_orm_query_for_task_data, query_name)
-
-    LOGGER.info("##################################################################################")
-    query_name = "Find TF Data for all pr2 links."
-    execute_query_in_mongo(db, neem_ids, query_name, "unique_pr2_links",
-                           get_mongo_query_for_tf_data_of_pr2_links_for_all_neems(db, neem_ids),
-                           number_of_repeats=10)
-    LOGGER.info("============================================================")
-    execute_query_in_sql(engine, get_sql_query_for_tf_data_of_pr2_links(), query_name, number_of_repeats=10)
-    # execute_query_in_sql_by_looping_over_neems(engine, get_sql_pr2_links_query_per_neem, query_name, neem_ids,
-    #                                            number_of_repeats=1)
-    LOGGER.info("============================================================")
-    execute_query_in_sql_using_orm(nq, get_orm_query_for_tf_data_of_pr2_links, query_name, number_of_repeats=10)
-    LOGGER.info("##################################################################################")
-    query_name = "Find TF Data for base_link,"
-    execute_query_in_mongo(db, neem_ids, query_name, "tf",
-                           get_mongo_query_for_tf_data_of_base_link_for_all_neems(neem_ids),
-                           number_of_repeats=10)
-    LOGGER.info("============================================================")
-    execute_query_in_sql(engine, get_sql_query_for_tf_data_of_base_link(), query_name, number_of_repeats=10)
-    LOGGER.info("============================================================")
-    execute_query_in_sql_using_orm(nq, get_orm_query_for_tf_data_of_base_link, query_name, number_of_repeats=10)
-    LOGGER.info("##################################################################################")
+    # mongo_vs_sql_for_getting_all_gripping_tasks(db, neem_ids, engine, nq)
+    # mongo_vs_sql_for_getting_tf_data_for_base_link(db, neem_ids, engine, nq)
+    mongo_vs_sql_for_getting_tf_data_for_pr2_links(db, neem_ids, engine, nq)
