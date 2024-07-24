@@ -47,6 +47,6 @@ USER ${NB_USER}
  
 CMD ["mysqld_safe"]    
 
-COPY entrypoint.sh /
+COPY binder/entrypoint.sh /
 RUN chmod +x /entrypoint.sh
 ENTRYPOINT ["/entrypoint.sh"]
