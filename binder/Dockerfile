@@ -39,8 +39,11 @@ RUN echo "deb [ arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-${
 RUN apt update && apt install -y mongodb-org
 RUN mkdir -p /data/db && \
     chown -R ${NB_USER}:users /data/db
- 
+
+USER root
 RUN pip install neem_to_sql
+
+USER ${NB_USER}
  
 CMD ["mysqld_safe"]    
 
