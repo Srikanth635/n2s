@@ -42,11 +42,12 @@ RUN mkdir -p /data/db && \
 
 USER root
 RUN pip install neem_to_sql
+COPY binder/entrypoint.sh /
+RUN chmod +x /entrypoint.sh
 
 USER ${NB_USER}
  
 CMD ["mysqld_safe"]    
 
-COPY binder/entrypoint.sh /
-RUN chmod +x /entrypoint.sh
+
 ENTRYPOINT ["/entrypoint.sh"]
