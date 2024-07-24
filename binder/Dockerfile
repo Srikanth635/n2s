@@ -46,6 +46,8 @@ COPY binder/entrypoint.sh /
 RUN chmod +x /entrypoint.sh
 
 USER ${NB_USER}
+
+WORKDIR /home/${NB_USER}/
  
 CMD ["mysqld_safe"]    
 
